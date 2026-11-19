@@ -58,7 +58,7 @@ jobs:
       id-token: write # only used when ai-review is on: the OIDC token for the review Foundry
     env:
       # The release workflow replaces this with the digest of the image built from the same commit.
-      GATE_IMAGE: ghcr.io/itm8-public/aifactory-review:0.1.0
+      GATE_IMAGE: ghcr.io/itm8-public/aifactory-review@sha256:299258af9fbf938ace98ffa9949ff1a39d09436fffb6e76a9d0b6128db18a268
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
