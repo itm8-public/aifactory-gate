@@ -1,0 +1,7 @@
+{
+  "version": "1",
+  "description": "Model deployments on the itm8 review Foundry, by role. All are Data Zone Standard (EU) deployments. Deployment names are set when the review Foundry is created; a change here must pass the evaluation set first.",
+  "find": { "deployment": "review-find", "structured": true },
+  "verify": { "deployment": "review-verify", "structured": true },
+  "explain": { "deployment": "review-explain", "structured": true }
+}

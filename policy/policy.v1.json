@@ -1,0 +1,75 @@
+{
+  "version": "1.1",
+  "description": "Verdict policy for the aifactory gate. The engine reads facts (scanners, checks, changed paths) and this file decides pass, fail or needs-person. Order of strength: fail, needs-person, pass.",
+  "failAtSeverity": {
+    "green": "high",
+    "yellow": "high",
+    "red": "medium"
+  },
+  "secrets": "fail",
+  "failedCheck": "fail",
+  "checkNotRun": "needs-person",
+  "missingTool": "needs-person",
+  "unreadableChanges": "needs-person",
+  "testsNotConfigured": {
+    "green": "none",
+    "yellow": "needs-person",
+    "red": "needs-person"
+  },
+  "areas": [
+    {
+      "id": "identity",
+      "reason": "Touches identity or access code or configuration",
+      "pattern": "auth(?!or(?!i[sz]))|security|permission|rbac|identity|(^|[^a-z])(sso|roles?)([^a-z]|$)",
+      "flags": "i",
+      "action": {
+        "green": "none",
+        "yellow": "needs-person",
+        "red": "needs-person"
+      }
+    },
+    {
+      "id": "migration",
+      "reason": "Touches a database migration",
+      "pattern": "(^|/)(drizzle|migrations?)/|(^|/)migrate\\.[a-z]+$|(^|/)drizzle\\.config\\.[a-z]+$|\\.sql$",
+      "flags": "i",
+      "action": {
+        "green": "none",
+        "yellow": "needs-person",
+        "red": "needs-person"
+      }
+    },
+    {
+      "id": "ci-infra",
+      "reason": "Touches CI, deployment or infrastructure configuration",
+      "pattern": "^\\.github/|(^|/)(azure-pipelines[^/]*\\.ya?ml|\\.gitlab-ci\\.yml|bitbucket-pipelines\\.yml)$|(^|/)infra/|\\.(bicep|bicepparam|tf|tfvars)$|(^|/)azure\\.yaml$|(^|/)Dockerfile[^/]*$|(^|/)\\.dockerignore$|(^|/)docker-compose[^/]*\\.ya?ml$|(^|/)CODEOWNERS$|^\\.aifactory/",
+      "flags": "",
+      "action": {
+        "green": "needs-person",
+        "yellow": "needs-person",
+        "red": "needs-person"
+      }
+    },
+    {
+      "id": "dependencies",
+      "reason": "Changes a dependency manifest or lock file",
+      "pattern": "(^|/)(package\\.json|package-lock\\.json|npm-shrinkwrap\\.json|pnpm-lock\\.yaml|yarn\\.lock|pyproject\\.toml|uv\\.lock|poetry\\.lock|requirements[^/]*\\.txt)$",
+      "flags": "",
+      "action": {
+        "green": "none",
+        "yellow": "none",
+        "red": "needs-person"
+      }
+    }
+  ],
+  "aiReview": {
+    "critical": "needs-person",
+    "high": {
+      "green": "fail",
+      "yellow": "needs-person",
+      "red": "needs-person"
+    },
+    "reviewerSteering": "needs-person",
+    "notCompleted": "needs-person"
+  }
+}

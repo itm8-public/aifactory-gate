@@ -1,0 +1,12 @@
+[
+  {
+    "RuleID": "stripe-access-token",
+    "Description": "Stripe access token",
+    "File": "src/config.ts",
+    "StartLine": 3,
+    "EndLine": 3,
+    "Secret": "REDACTED",
+    "Match": "REDACTED",
+    "Fingerprint": "src/config.ts:stripe-access-token:3"
+  }
+]

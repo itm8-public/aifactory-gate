@@ -1,0 +1,150 @@
+# The aifactory gate, called from each customer repository (templates/aifactory-gate.yml).
+# Runs the project's tests, then the engine image: scanners, verdict policy, summary.
+# The required check in the customer's ruleset is "gate / verdict".
+name: aifactory gate
+
+on:
+  workflow_call:
+    inputs:
+      zone:
+        description: green, yellow or red
+        type: string
+        required: true
+      level:
+        description: Responsibility level. 1 is advisory (never blocks); 2 and 3 block on anything but pass.
+        type: number
+        default: 2
+      test-command:
+        description: The project's test command, run with bash. Empty means no tests are configured.
+        type: string
+        default: ''
+      node-version:
+        description: Node version to set up before the test command. Empty skips setup.
+        type: string
+        default: ''
+      working-directory:
+        type: string
+        default: '.'
+      ai-review:
+        description: Run the AI review (find, verify, explain) on itm8's review Foundry. Needs the three inputs below and the customer's consent.
+        type: boolean
+        default: false
+      review-endpoint:
+        description: The review Foundry's https origin.
+        type: string
+        default: ''
+      azure-client-id:
+        description: Client id of the customer's managed identity for the review Foundry (no secret; GitHub OIDC).
+        type: string
+        default: ''
+      azure-tenant-id:
+        type: string
+        default: ''
+      review-token-scope:
+        description: Entra scope of the model token. The account endpoint uses the default; a Foundry project endpoint uses https://ai.azure.com/.default.
+        type: string
+        default: https://cognitiveservices.azure.com/.default
+
+permissions:
+  contents: read
+
+jobs:
+  verdict:
+    name: verdict
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # only used when ai-review is on: the OIDC token for the review Foundry
+    env:
+      # The release workflow replaces this with the digest of the image built from the same commit.
+      GATE_IMAGE: ghcr.io/itm8-public/aifactory-review:0.1.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Two commits: the verdict compares the merge commit (or the pushed commit) with its parent.
+          fetch-depth: 2
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: ${{ inputs.node-version != '' }}
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Tests
+        id: tests
+        if: ${{ inputs.test-command != '' }}
+        continue-on-error: true
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -eo pipefail -c "$TEST_COMMAND"
+
+      # A failed sign-in does not stop the gate: the engine then records that the AI review did not
+      # complete, which the policy turns into needs-person.
+      - name: Sign in to the review Foundry
+        id: azure
+        if: ${{ inputs.ai-review }}
+        continue-on-error: true
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ inputs.azure-client-id }}
+          tenant-id: ${{ inputs.azure-tenant-id }}
+          allow-no-subscriptions: true
+
+      - name: Model token
+        id: token
+        if: ${{ inputs.ai-review && steps.azure.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          SCOPE: ${{ inputs.review-token-scope }}
+        run: |
+          token=$(az account get-access-token --scope "$SCOPE" --query accessToken -o tsv)
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Scan and decide
+        id: gate
+        continue-on-error: true
+        env:
+          ZONE: ${{ inputs.zone }}
+          LEVEL: ${{ inputs.level }}
+          TESTS: ${{ inputs.test-command == '' && 'not-configured' || steps.tests.outcome }}
+          AI_REVIEW: ${{ inputs.ai-review && 'on' || 'off' }}
+          AIFACTORY_MODEL_ENDPOINT: ${{ inputs.review-endpoint }}
+          AIFACTORY_MODEL_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/gate" && chmod 0777 "$RUNNER_TEMP/gate"
+          docker run --rm \
+            -e AIFACTORY_MODEL_ENDPOINT -e AIFACTORY_MODEL_TOKEN \
+            -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/gate:/out" \
+            "$GATE_IMAGE" run --repo /repo --out /out --zone "$ZONE" --level "$LEVEL" --base HEAD^1 \
+            --check "tests=$TESTS" --ai-review "$AI_REVIEW"
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/gate/summary.md" ]; then cat "$RUNNER_TEMP/gate/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else echo "## aifactory gate: needs-person" >> "$GITHUB_STEP_SUMMARY"; echo "The engine did not produce a verdict." >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Keep the verdict
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: aifactory-verdict
+          path: ${{ runner.temp }}/gate/verdict.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      # The engine exits 0 for pass or an advisory level, 1 otherwise. A missing verdict never passes.
+      - name: Enforce
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME: ${{ steps.gate.outcome }}
+        run: |
+          verdict=$(sed -n 's/.*"verdict": "\([a-z-]*\)".*/\1/p' "$RUNNER_TEMP/gate/verdict.json" 2>/dev/null | head -1)
+          echo "verdict=${verdict:-none}, engine step ${OUTCOME}"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "::error title=aifactory gate::${verdict:-no verdict}. See the job summary for what to do."
+            exit 1
+          fi

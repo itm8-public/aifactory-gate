@@ -1,0 +1,5 @@
+# The gate's own files need the itm8 review team, so the gate cannot be removed in the same pull request.
+# Replace @OWNER/aifactory-review with the review team (organization) or the reviewer's account.
+/.github/workflows/aifactory-gate.yml @OWNER/aifactory-review
+/.github/CODEOWNERS @OWNER/aifactory-review
+/CODEOWNERS @OWNER/aifactory-review

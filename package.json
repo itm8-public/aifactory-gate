@@ -1,0 +1,19 @@
+{
+  "name": "aifactory-gate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "itm8 AI Factory review gate: scanners, a deterministic verdict policy and a reusable GitHub workflow.",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "aifactory-review": "engine/bin/aifactory-review.mjs"
+  },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "image": "node scripts/build-image.mjs",
+    "setup-repo": "node scripts/setup-repo.mjs"
+  },
+  "license": "MIT"
+}

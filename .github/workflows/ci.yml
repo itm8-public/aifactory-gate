@@ -1,0 +1,31 @@
+# Tests for this repository: the engine's unit tests and an image build (no push).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+      - run: npm test
+      - name: Image build
+        run: node scripts/build-image.mjs aifactory-review:ci
+      - name: Image smoke test (the engine on this repository)
+        run: |
+          mkdir -p "$RUNNER_TEMP/out" && chmod 0777 "$RUNNER_TEMP/out"
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/out:/out" aifactory-review:ci \
+            run --repo /repo --out /out --zone green --level 1 --check tests=success
+          cat "$RUNNER_TEMP/out/summary.md"

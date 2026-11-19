@@ -1,0 +1,19 @@
+{
+  "_comment": "Every version in the engine image. Versions are at least 14 days old when pinned; checksums are the release assets' published sha256 and are verified in the image build.",
+  "baseImage": {
+    "ref": "node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54"
+  },
+  "gitleaks": {
+    "version": "8.30.1",
+    "sha256": "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  },
+  "opengrep": {
+    "version": "1.33.1",
+    "asset": "opengrep_manylinux_x86",
+    "sha256": "46e8133cc490f9f50518061590ce2f6be5a08afaeda034471c0ceda4b3899808"
+  },
+  "osvScanner": {
+    "version": "2.7.0",
+    "sha256": "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"
+  }
+}

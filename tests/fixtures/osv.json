@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "source": { "path": "/repo/package-lock.json", "type": "lockfile" },
+      "packages": [
+        {
+          "package": { "name": "left-pad-ish", "version": "1.0.0", "ecosystem": "npm" },
+          "vulnerabilities": [
+            { "id": "GHSA-aaaa-bbbb-cccc", "summary": "Prototype pollution", "database_specific": { "severity": "HIGH" } },
+            { "id": "GHSA-dddd-eeee-ffff", "summary": "Regular expression denial of service", "database_specific": { "severity": "MODERATE" } }
+          ],
+          "groups": [
+            { "ids": ["GHSA-aaaa-bbbb-cccc"], "max_severity": "7.5" },
+            { "ids": ["GHSA-dddd-eeee-ffff"] }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+# itm8 AI Factory gate. Copy to .github/workflows/aifactory-gate.yml in your repository.
+# The ruleset on main requires the check "gate / verdict". Do not rename the job "gate".
+name: aifactory gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # the gate signs in to itm8's review Foundry with GitHub OIDC when ai-review is on
+
+jobs:
+  gate:
+    uses: itm8-public/aifactory-gate/.github/workflows/gate.yml@v0
+    with:
+      zone: green # green, yellow or red, as registered for the solution
+      level: 2 # 1 advisory, 2 customer changes and itm8 approves, 3 itm8 owns CI/CD
+      node-version: '24'
+      test-command: npm ci && npm test
+      # The AI review, once the customer has agreed to it. Values come from itm8 at onboarding.
+      ai-review: false
+      review-endpoint: ''
+      azure-client-id: ''
+      azure-tenant-id: ''

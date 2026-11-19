@@ -1,0 +1,30 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "Opengrep",
+          "rules": [
+            { "id": "supabase-service-role-in-client", "defaultConfiguration": { "level": "error" }, "properties": { "security-severity": "9.0" } },
+            { "id": "raw-html-from-variable", "defaultConfiguration": { "level": "warning" } }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "supabase-service-role-in-client",
+          "level": "error",
+          "message": { "text": "A Supabase client is created with a service role key." },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "src/lib/supabase.ts" }, "region": { "startLine": 12 } } }]
+        },
+        {
+          "ruleId": "raw-html-from-variable",
+          "level": "warning",
+          "message": { "text": "HTML is inserted without escaping." },
+          "locations": [{ "physicalLocation": { "artifactLocation": { "uri": "src/pages/Post.tsx" }, "region": { "startLine": 40 } } }]
+        }
+      ]
+    }
+  ]
+}
