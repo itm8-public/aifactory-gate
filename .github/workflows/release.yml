@@ -1,5 +1,6 @@
-# Publishes a release: tests, builds and pushes the engine image, writes its digest into gate.yml on a
-# release commit, tags that commit vX.Y.Z and moves the major tag (v0, v1, ...) to it.
+# Builds, attests and pushes the engine image for a release and prints its digest. The release commit
+# and tags are made by a maintainer (see README, Release): GitHub does not let the workflow token push a
+# commit that changes a workflow file, and gate.yml carries the digest.
 # Started by hand with the version in package.json. The image package must be public once, by hand,
 # so customer repositories can pull it without signing in.
 name: Release
@@ -23,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
       packages: write
       id-token: write
       attestations: write
@@ -60,19 +61,23 @@ jobs:
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
 
-      - name: Release commit and tags
+      - name: Next step for the maintainer
         env:
           REF: ${{ steps.image.outputs.ref }}
           VERSION: ${{ steps.v.outputs.version }}
           MAJOR: ${{ steps.v.outputs.major }}
-          GH_TOKEN: ${{ github.token }}
         run: |
-          node scripts/release.mjs pin "$REF"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "release: v$VERSION runs $REF"
-          git tag "v$VERSION"
-          git tag -f "$MAJOR"
-          git push origin "v$VERSION"
-          git push -f origin "$MAJOR"
-          gh release create "v$VERSION" --verify-tag --title "v$VERSION" --notes "Engine image: \`$REF\`. Callers on \`@$MAJOR\` get this release."
+          {
+            echo "### Image pushed"
+            echo "\`$REF\`"
+            echo
+            echo "Release it from a clone of main:"
+            echo '```'
+            echo "node scripts/release.mjs pin $REF"
+            echo "git commit -am \"release: v$VERSION runs $REF\""
+            echo "git tag v$VERSION && git tag -f $MAJOR"
+            echo "git push origin v$VERSION && git push -f origin $MAJOR"
+            echo "gh release create v$VERSION --verify-tag --title v$VERSION --notes \"Engine image: $REF\""
+            echo "git reset --hard origin/main   # the release commit lives on the tags, not on main"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
