@@ -10,7 +10,7 @@ import { EXPLAIN_SCHEMA, FIND_SCHEMA, MODEL_RULES, PROMPT_VERSION, VERIFY_SCHEMA
  * @param {(path: string) => string|null} input.readFile
  * @param {string[]} input.scannerRules  rule ids of the scanner rule pack
  * @param {string} input.zone
- * @param {object} input.models  role to { deployment, structured? } (policy/models.v1.json)
+ * @param {object} input.models  role to { deployment, structured?, temperature? } (policy/models.v1.json)
  * @param {Function} input.complete  from createModelClient
  */
 export async function reviewWithModels({ diff, readFile, scannerRules, zone, models, complete }) {
@@ -20,7 +20,7 @@ export async function reviewWithModels({ diff, readFile, scannerRules, zone, mod
   const call = async (role, prompt, schema, schemaName) => {
     const cfg = models[role];
     state.deployments[role] = cfg.deployment;
-    const { data, usage } = await complete({ deployment: cfg.deployment, structured: cfg.structured !== false, schema, schemaName, ...prompt });
+    const { data, usage } = await complete({ deployment: cfg.deployment, structured: cfg.structured !== false, temperature: cfg.temperature, schema, schemaName, ...prompt });
     state.usage[role] = usage;
     return data;
   };
@@ -64,6 +64,7 @@ export async function explainVerdict({ record, models, complete }) {
   const { data } = await complete({
     deployment: models.explain.deployment,
     structured: models.explain.structured !== false,
+    temperature: models.explain.temperature,
     schema: EXPLAIN_SCHEMA,
     schemaName: 'explanation',
     ...explainPrompt(record),

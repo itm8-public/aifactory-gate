@@ -58,6 +58,16 @@ export async function runEval({ casesDir, models, complete }) {
   return { results, totals };
 }
 
+/** Where each miss and false flag points (file, rule, line, never code), so a result can be checked. */
+function details(results) {
+  const at = (f) => `${f.file}:${f.line ?? '?'} ${f.rule ?? ''}`.trim();
+  const lines = results.flatMap((r) => [
+    ...r.missed.map((m) => `- ${r.name}: missed ${at(m)}`),
+    ...r.falseFlags.map((f) => `- ${r.name}: false flag ${at(f)} (${f.severity})`),
+  ]);
+  return lines.length ? ['', ...lines] : [];
+}
+
 export function report({ results, totals }) {
   const rows = results.map((r) => `| ${r.name} | ${r.expected} | ${r.found} | ${r.missed.length} | ${r.falseFlags.length} | ${r.error ?? ''} |`);
   return [
@@ -65,6 +75,7 @@ export function report({ results, totals }) {
     '| --- | --- | --- | --- | --- | --- |',
     ...rows,
     `| **Total** | ${totals.expected} | ${totals.found} | ${totals.missed} | ${totals.falseFlags} | ${totals.errors} |`,
+    ...details(results),
   ].join('\n');
 }
 

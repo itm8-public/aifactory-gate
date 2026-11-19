@@ -13,10 +13,11 @@ export function createModelClient({ endpoint, token, fetchImpl = fetch }) {
   if (!token) throw new Error('model token is missing');
   const url = `${endpoint.replace(/\/$/, '')}/openai/v1/chat/completions`;
 
-  return async function complete({ deployment, system, user, schema, schemaName, structured = true }) {
+  return async function complete({ deployment, system, user, schema, schemaName, structured = true, temperature }) {
     const body = {
       model: deployment,
-      temperature: 0,
+      // Only when the model configuration sets one: reasoning models accept no value but their default.
+      ...(temperature === undefined ? {} : { temperature }),
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },

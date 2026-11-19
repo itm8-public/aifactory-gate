@@ -62,6 +62,8 @@ test('client: request shape, Entra token, structured output', async () => {
   assert.equal(seen.url, 'https://review.example.net/openai/v1/chat/completions');
   assert.equal(seen.init.headers.authorization, 'Bearer tok');
   assert.equal(seen.body.model, 'review-find');
+  assert.equal('temperature' in seen.body, false, 'no temperature unless the model configuration sets one');
+  await complete({ deployment: 'review-find', system: 's', user: 'u', schema: FIND_SCHEMA, schemaName: 'findings', temperature: 0 });
   assert.equal(seen.body.temperature, 0);
   assert.equal(seen.body.response_format.type, 'json_schema');
   assert.deepEqual(r.data, { findings: [] });
