@@ -71,5 +71,10 @@
     },
     "reviewerSteering": "needs-person",
     "notCompleted": "needs-person"
+  },
+  "readiness": {
+    "notDeclared": { "green": "none", "yellow": "none", "red": "none" },
+    "ownersMissing": { "green": "none", "yellow": "needs-person", "red": "needs-person" },
+    "checklistIncomplete": { "green": "none", "yellow": "needs-person", "red": "needs-person" }
   }
 }

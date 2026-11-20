@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { READERS } from './facts.mjs';
 import { countBySeverity, decide } from './policy.mjs';
+import { readReadiness } from './readiness.mjs';
 import { summary } from './report.mjs';
 
 /** Paths changed between the merge base of `base` and HEAD, or null when git cannot tell. */
@@ -57,7 +58,14 @@ export async function buildVerdict({ repo, results, zone, level, base, checks, p
   const findings = [...scanned, ...(ai.findings ?? [])];
   const changed = files !== undefined ? files : changedFiles(repo, base);
   const aiReview = { requested: ai.requested, error: ai.error };
-  const { verdict, reasons } = decide({ policy, zone, files: changed, checks, tools, findings, aiReview });
+  const readiness = readReadiness((rel) => {
+    try {
+      return readFileSync(path.join(repo, rel), 'utf8');
+    } catch {
+      return null;
+    }
+  });
+  const { verdict, reasons } = decide({ policy, zone, files: changed, checks, tools, findings, aiReview, readiness });
   const record = {
     verdict,
     zone,
@@ -67,6 +75,7 @@ export async function buildVerdict({ repo, results, zone, level, base, checks, p
     counts: countBySeverity(findings),
     tools,
     checks,
+    readiness,
     aiReview: ai.requested ? { ...ai.state, error: ai.error ?? null } : { requested: false },
     changedFiles: changed === null ? null : changed.length,
     findings,

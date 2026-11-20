@@ -15,7 +15,7 @@ const STRENGTH = { none: 0, pass: 0, 'needs-person': 1, fail: 2 };
  * @param {object[]} input.findings  findings from facts.mjs and, when it ran, the AI review
  * @param {{requested: boolean, error?: string}} [input.aiReview]
  */
-export function decide({ policy, zone, files, checks, tools, findings, aiReview = { requested: false } }) {
+export function decide({ policy, zone, files, checks, tools, findings, aiReview = { requested: false }, readiness = { declared: false } }) {
   if (!ZONES.includes(zone)) throw new Error(`unknown zone "${zone}"`);
   const reasons = [];
   const add = (action, text) => {
@@ -59,6 +59,20 @@ export function decide({ policy, zone, files, checks, tools, findings, aiReview 
     for (const area of policy.areas) {
       const re = new RegExp(area.pattern, area.flags);
       if (files.some((f) => re.test(f))) add(area.action[zone], area.reason);
+    }
+  }
+
+  // Production readiness (itm8 Production Readiness Checklist). The free, automated items are the
+  // scanners, tests and the ruleset above. These are the items a person confirms, from the repo's
+  // .aifactory/readiness.json; the policy applies them in yellow/red only. A repository with no
+  // manifest is unaffected (notDeclared is "none"): readiness is opt-in by adding the file.
+  const rp = policy.readiness;
+  if (rp) {
+    if (!readiness.declared) add(rp.notDeclared?.[zone], 'Production readiness is not declared (.aifactory/readiness.json is absent)');
+    else if (readiness.unreadable) add(rp.checklistIncomplete[zone], '.aifactory/readiness.json is present but could not be read');
+    else {
+      if (readiness.ownersMissing) add(rp.ownersMissing[zone], 'No system owner and business owner are declared in .aifactory/readiness.json');
+      if (readiness.incomplete?.length) add(rp.checklistIncomplete[zone], `Production-readiness checklist not complete: ${readiness.incomplete.join(', ')}`);
     }
   }
 

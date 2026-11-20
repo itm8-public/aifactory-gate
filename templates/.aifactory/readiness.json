@@ -1,0 +1,11 @@
+{
+  "systemOwner": "",
+  "businessOwner": "",
+  "checklist": {
+    "ownersInformed": false,
+    "businessTestingComplete": false,
+    "risksAndRollbackConsidered": false,
+    "changeApproved": false,
+    "privacyAssessed": false
+  }
+}

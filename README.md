@@ -44,12 +44,33 @@ Before a model, prompt or policy change is released, run the evaluation set (kep
 | CI, deployment, infrastructure or the gate files changed | needs-person | needs-person | needs-person |
 | Identity or access, or a database migration changed    | note         | needs-person | needs-person |
 | Dependency manifest or lock file changed               | note         | note         | needs-person |
+| Production readiness declared but owners or checklist incomplete | —   | needs-person | needs-person |
 
 `fail` beats `needs-person`, which beats `pass`. A missing fact never passes. The path rules come from the AI Factory web template's pull request verdict.
 
 With the AI review on: a confirmed critical finding needs a person; a confirmed high finding fails in green and needs a person in yellow and red; a finding the verifier could not confirm is listed as low and cannot block.
 
 Level 1 runs the same checks but never blocks. Levels 2 and 3 block on anything but `pass`.
+
+### Production readiness (yellow and red)
+
+Most of the itm8 Production Readiness Checklist is already covered, for free, by the gate in every zone: the scanners (secrets, code security, dependency vulnerabilities), the test run, and the branch ruleset (version control and review before merge). The items the gate cannot see from the code — a named **system owner** and **business owner**, and a short checklist a person attests to — come from an optional `.aifactory/readiness.json` (copy `templates/.aifactory/readiness.json`):
+
+```json
+{
+  "systemOwner": "Name <email>",
+  "businessOwner": "Name <email>",
+  "checklist": {
+    "ownersInformed": true,
+    "businessTestingComplete": true,
+    "risksAndRollbackConsidered": true,
+    "changeApproved": true,
+    "privacyAssessed": true
+  }
+}
+```
+
+It is **opt-in**: a repository with no manifest is unaffected. Once the manifest is present, a missing owner or an unticked checklist item needs a person in **yellow and red**; **green** is left to the free, automated checks (no owner or checklist is required there), and at level 1 it is advisory like every other fact. To make the declaration mandatory for all yellow/red repositories — block when the manifest is absent, not only when it is incomplete — set `readiness.notDeclared` to `needs-person` for `yellow`/`red` in `policy/policy.v1.json`.
 
 ## Install in a repository
 

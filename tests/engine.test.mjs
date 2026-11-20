@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { parseArgs } from '../engine/bin/aifactory-review.mjs';
 import { gitleaksFindings, osvFindings, sarifFindings, severityFromScore } from '../engine/src/facts.mjs';
 import { decide } from '../engine/src/policy.mjs';
+import { readReadiness } from '../engine/src/readiness.mjs';
 import { summary } from '../engine/src/report.mjs';
 import { runScanner, scannerCommands } from '../engine/src/scan.mjs';
 import { buildVerdict, readResults } from '../engine/src/verdict.mjs';
@@ -319,6 +320,62 @@ test('solo policy differs from the standard policy only in green-zone CI/infra',
   standard.description = soloPolicy.description;
   standard.areas.find((a) => a.id === 'ci-infra').action.green = 'none';
   assert.deepEqual(soloPolicy, standard);
+});
+
+test('readReadiness reads owners and the checklist, or reports none', () => {
+  const file = (content) => () => content;
+  assert.deepEqual(readReadiness(() => null), { declared: false });
+  const complete = { systemOwner: 'A <a@x>', businessOwner: 'B <b@x>', checklist: { ownersInformed: true, businessTestingComplete: true, risksAndRollbackConsidered: true, changeApproved: true, privacyAssessed: true } };
+  assert.deepEqual(readReadiness(file(JSON.stringify(complete))), { declared: true, ownersMissing: false, incomplete: [] });
+  assert.equal(readReadiness(file(JSON.stringify({ ...complete, systemOwner: '  ' }))).ownersMissing, true);
+  assert.deepEqual(readReadiness(file(JSON.stringify({ systemOwner: 'A', businessOwner: 'B', checklist: { ownersInformed: true } }))).incomplete, [
+    'businessTestingComplete',
+    'risksAndRollbackConsidered',
+    'changeApproved',
+    'privacyAssessed',
+  ]);
+  assert.deepEqual(readReadiness(file('{ not json')), { declared: true, unreadable: true });
+});
+
+test('buildVerdict reads .aifactory/readiness.json from the repo and applies it in yellow', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'gate-'));
+  writeFileSync(path.join(dir, 'gitleaks.json'), '[]');
+  writeFileSync(path.join(dir, 'opengrep.sarif'), JSON.stringify({ runs: [] }));
+  writeFileSync(path.join(dir, 'osv.json'), JSON.stringify({ results: [] }));
+  mkdirSync(path.join(dir, '.aifactory'));
+  writeFileSync(path.join(dir, '.aifactory/readiness.json'), JSON.stringify({ systemOwner: '', businessOwner: '', checklist: {} }));
+  const record = await buildVerdict({
+    repo: dir,
+    results: dir,
+    zone: 'yellow',
+    level: 2,
+    base: 'HEAD^1',
+    checks: { tests: 'success' },
+    policy,
+    versions: { engine: '0', policy: '1', tools: {} },
+    files: ['src/App.tsx'],
+  });
+  assert.equal(record.verdict, 'needs-person');
+  assert.equal(record.readiness.declared, true);
+  assert.match(record.reasons.map((r) => r.text).join(' '), /system owner and business owner/);
+});
+
+test('production readiness is opt-in, yellow/red only, and never touches green', () => {
+  const incomplete = { declared: true, ownersMissing: true, incomplete: ['changeApproved'] };
+  // No manifest: unaffected in every zone (opt-in).
+  for (const zone of ['green', 'yellow', 'red']) {
+    assert.equal(decide({ ...base, zone, readiness: { declared: false } }).verdict, 'pass', `${zone} without a manifest`);
+  }
+  // Declared but incomplete: a person in yellow/red, nothing in green.
+  assert.equal(decide({ ...base, readiness: incomplete }).verdict, 'pass', 'green is left to the automated checks');
+  assert.equal(decide({ ...base, zone: 'yellow', readiness: incomplete }).verdict, 'needs-person');
+  assert.equal(decide({ ...base, zone: 'red', readiness: incomplete }).verdict, 'needs-person');
+  // Declared and complete: passes.
+  assert.equal(decide({ ...base, zone: 'red', readiness: { declared: true, ownersMissing: false, incomplete: [] } }).verdict, 'pass');
+  // A present-but-unreadable manifest needs a person in yellow/red.
+  assert.equal(decide({ ...base, zone: 'yellow', readiness: { declared: true, unreadable: true } }).verdict, 'needs-person');
+  // The solo policy enforces readiness the same way.
+  assert.equal(decide({ ...base, policy: soloPolicy, zone: 'yellow', readiness: incomplete }).verdict, 'needs-person');
 });
 
 test('CLI: --profile selects the solo policy and is validated', () => {
