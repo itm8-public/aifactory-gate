@@ -18,7 +18,7 @@ assumption fails.
    The only actor who can clear it is the ruleset's single bypass actor: for an org repo set up
    with `--team`, that is the itm8 review team ([`scripts/setup-repo.mjs:37-41`](../scripts/setup-repo.mjs)).
    A solo developer not on that team is blocked with no self-service path and no published SLA.
-   This is exactly what the Oral Care developer hit — the only way through was an admin override.
+   This is exactly the reported case — the only way through was an admin override.
 
 2. **A transient scanner or AI-review failure becomes `needs-person` with no retry.** A scanner
    runs once ([`engine/src/scan.mjs:32-48`](../engine/src/scan.mjs)); if it fails to run, the tool
