@@ -21,7 +21,10 @@ export function checkVersion(version, pkgVersion) {
   const v = version.replace(/^v/, '');
   if (!/^\d+\.\d+\.\d+$/.test(v)) throw new Error(`version must be MAJOR.MINOR.PATCH, got "${version}"`);
   if (v !== pkgVersion) throw new Error(`version ${v} does not match package.json ${pkgVersion}`);
-  return { version: v, major: `v${v.split('.')[0]}` };
+  const major = `v${v.split('.')[0]}`;
+  // `major` is the stable channel (@v0); `next` is the prerelease/soak channel (@v0-next). A release
+  // publishes to `next`; a maintainer promotes it to `major` after a soak.
+  return { version: v, major, next: `${major}-next` };
 }
 
 function main([command, arg]) {
@@ -30,9 +33,9 @@ function main([command, arg]) {
     console.log(`gate.yml now runs ${arg}`);
   } else if (command === 'check') {
     const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
-    const { version, major } = checkVersion(arg ?? '', pkg.version);
-    if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nmajor=${major}\n`, { flag: 'a' });
-    console.log(`version=${version} major=${major}`);
+    const { version, major, next } = checkVersion(arg ?? '', pkg.version);
+    if (process.env.GITHUB_OUTPUT) writeFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nmajor=${major}\nnext=${next}\n`, { flag: 'a' });
+    console.log(`version=${version} major=${major} next=${next}`);
   } else throw new Error('command must be pin or check');
 }
 

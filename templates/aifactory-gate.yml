@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   gate:
+    # @v0 is the stable channel. To soak a prerelease before it is promoted, pin @v0-next instead.
     uses: itm8-public/aifactory-gate/.github/workflows/gate.yml@v0
     with:
       zone: green # green, yellow or red, as registered for the solution

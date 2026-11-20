@@ -100,7 +100,17 @@ node engine/bin/aifactory-review.mjs verdict --repo . --out ./out --zone green -
 
 ## Release
 
-Run the `Release` workflow with the version in `package.json`. It tests, builds the image from `pins.json` and pushes it to GitHub Container Registry with a provenance attestation, then prints the digest and the commands that finish the release: a maintainer writes the digest into `GATE_IMAGE` in `gate.yml` on a release commit, tags `vX.Y.Z` and moves the major tag (`v0` until 1.0). The workflow token cannot do this step, because GitHub does not let it push a commit that changes a workflow file. Make the image package public once, by hand, so customer repositories can pull it. Protect the tags so only maintainers can move them.
+A release goes out in two stages, so a version can be soaked before it reaches every customer.
+
+- **`@v0`** — the **stable** channel. The caller template pins `@v0`; this is what customers run by default. It only moves on an explicit promote.
+- **`@v0-next`** — the **prerelease** channel. Each release publishes here first. A customer can soak a new version by pinning `uses: …/gate.yml@v0-next` in their caller.
+
+Run the `Release` workflow with the version in `package.json`. It tests, builds the image from `pins.json` and pushes it to GitHub Container Registry with a provenance attestation, then prints the digest and the two-stage commands:
+
+1. **Publish to `@v0-next`** — a maintainer writes the digest into `GATE_IMAGE` in `gate.yml` on a release commit, tags `vX.Y.Z` and moves `@v0-next` (the stable `@v0` is untouched, so default customers are unaffected). The workflow token cannot do this, because GitHub does not let it push a commit that changes a workflow file.
+2. **Promote to `@v0`** — after soaking on `@v0-next`, move `@v0` to the same commit: `git tag -f v0 v0-next && git push -f origin v0`. This is the step that rolls the version out to all stable customers.
+
+Make the image package public once, by hand, so customer repositories can pull it. Protect the tags so only maintainers can move them. (`v0`/`v0-next` are shown for the current `0.x` line; a future `1.0` uses `v1`/`v1-next`.)
 
 ## Licence
 
