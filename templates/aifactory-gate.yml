@@ -17,7 +17,7 @@ jobs:
     uses: itm8-public/aifactory-gate/.github/workflows/gate.yml@v0
     with:
       zone: green # green, yellow or red, as registered for the solution
-      level: 2 # 1 advisory, 2 customer changes and itm8 approves, 3 itm8 owns CI/CD
+      level: 2 # 1 advisory (never blocks); 2 and 3 block on anything but pass
       node-version: '24'
       test-command: npm ci && npm test
       # The AI review, once the customer has agreed to it. Values come from itm8 at onboarding.
