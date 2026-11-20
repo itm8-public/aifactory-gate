@@ -68,6 +68,28 @@ Level 1 runs the same checks but never blocks. Levels 2 and 3 block on anything 
 
 Rulesets on private repositories need GitHub Team (organizations) or Pro (personal accounts).
 
+### Solo (self-service) profile
+
+A customer who builds solo — one developer, no second reviewer — would otherwise be blocked by the
+gate's own design: the first pull request (the gate setup) and every later CI/infrastructure change
+route to `needs-person`, and on an organization repository only the itm8 review team can clear that.
+The opt-in `solo` profile lets such a customer self-serve ordinary **green-zone** CI/infrastructure
+changes, while everything that genuinely needs itm8 still blocks — any secret, the red zone, a
+confirmed critical/high AI finding, and yellow/red-zone infrastructure.
+
+Turn it on in two places:
+
+```bash
+node scripts/setup-repo.mjs --repo OWNER/NAME --team aifactory-review --profile solo --apply
+```
+
+and set `profile: solo` in the caller (`templates/aifactory-gate.yml`). With the profile on, a
+green-zone CI/infra change gets a `pass` and the customer merges it themselves; the gate check still
+fails (and only the itm8 team / repo admin can bypass) for the serious cases above. It is opt-in: a
+repository set up without `--profile solo` keeps the standard, code-owner-reviewed behaviour. See
+[`docs/solo-developer-redesign.md`](docs/solo-developer-redesign.md) for the trust model and the
+security rationale.
+
 ## Develop
 
 ```bash

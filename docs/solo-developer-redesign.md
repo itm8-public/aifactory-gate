@@ -5,6 +5,43 @@ It states the problem precisely, proposes a redesign with recommended defaults, 
 exact change points. It does not change any customer repository. Companion to
 [`gate-verdicts-explained.md`](gate-verdicts-explained.md).*
 
+## Implemented in v0.3.0 (opt-in `solo` profile)
+
+Items (iii) scanner retry and (iv) reason-first summary shipped in 0.2.0. Items (i), (ii) and (vi)
+are implemented as an **opt-in `solo` profile** that activates only when a caller sets `profile: solo`
+and a repository is onboarded with `setup-repo.mjs --profile solo`. The default behaviour is
+unchanged.
+
+A security finding changed the mechanism for item (i). The original note suggested doing the unblock
+purely in the ruleset/bypass-actor layer. That cannot be done safely: GitHub ruleset **bypass is
+all-or-nothing**, so making the customer's lead a bypass actor would also let them bypass a secret
+(`fail`), the red zone, or a confirmed critical finding — the ruleset cannot see *why* the check
+failed. And a *genuinely* solo developer can never satisfy `require_code_owner_review` (GitHub does
+not let an author approve their own PR). So the unblock is done where it can be precise:
+
+- **The gate stops *blocking* green-zone-infra-only cases** for the solo profile, via a separate
+  [`policy/policy.solo.v1.json`](../policy/policy.solo.v1.json) that differs from
+  [`policy/policy.v1.json`](../policy/policy.v1.json) in exactly one field (green `ci-infra` →
+  `none`). A test asserts that one-field difference, so the two policies cannot silently drift.
+  Everything that needs itm8 — any secret, the red zone, confirmed critical/high AI findings,
+  yellow/red-zone infra, a missing scanner, a check that did not run — still blocks.
+- **A new optional caller input `profile`** ([`.github/workflows/gate.yml`](../.github/workflows/gate.yml))
+  selects it; empty keeps the standard policy, so existing callers are byte-for-byte unaffected. The
+  engine ([`engine/bin/aifactory-review.mjs`](../engine/bin/aifactory-review.mjs)) maps `profile: solo`
+  to the solo policy.
+- **`setup-repo.mjs --profile solo`** sets the ruleset to not require a code-owner review (a solo
+  customer has no second reviewer); the gate check and the itm8/repo-admin bypass actor are unchanged,
+  so the serious cases the gate still blocks remain itm8's to clear.
+- **AI review:** the solo caller template documents turning the review on only when itm8 has
+  provisioned the identity and supplied the inputs (see [`ai-review-onboarding.md`](ai-review-onboarding.md)).
+  Fully automating the managed-identity / OIDC / consent setup is **not** done here — it remains the
+  manual onboarding step, flagged for a later change.
+
+The deliberate trade-off, accepted by the owner: on the solo profile, ordinary green-zone CI/infra
+changes are self-served by the customer with only automated assurance (scanners, tests, and the AI
+review when on) and **no human review**, because a genuinely solo customer has no second person.
+This activates only on a new release (owner-gated) and only for repositories that opt in.
+
 ## The problem, precisely
 
 Many customers will build solo and self-service (one developer, no second reviewer on hand).

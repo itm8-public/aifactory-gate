@@ -18,9 +18,14 @@ jobs:
     with:
       zone: green # green, yellow or red, as registered for the solution
       level: 2 # 1 advisory (never blocks); 2 and 3 block on anything but pass
+      # profile: solo # self-service: the gate self-serves green-zone CI/infra changes. Set up the
+      #               # repository with `setup-repo.mjs --profile solo`. Secrets, the red zone,
+      #               # confirmed critical/high findings and yellow/red infra still need a person.
       node-version: '24'
       test-command: npm ci && npm test
-      # The AI review, once the customer has agreed to it. Values come from itm8 at onboarding.
+      # The AI review, once the customer has agreed to it and itm8 has provisioned the identity
+      # (see docs/ai-review-onboarding.md). At solo onboarding, set ai-review: true with the three
+      # values below only when they are provided; leaving them empty keeps the review off.
       ai-review: false
       review-endpoint: ''
       azure-client-id: ''

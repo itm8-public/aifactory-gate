@@ -11,6 +11,7 @@ import { runScanner, scannerCommands } from '../engine/src/scan.mjs';
 import { buildVerdict, readResults } from '../engine/src/verdict.mjs';
 
 const policy = JSON.parse(readFileSync(new URL('../policy/policy.v1.json', import.meta.url), 'utf8'));
+const soloPolicy = JSON.parse(readFileSync(new URL('../policy/policy.solo.v1.json', import.meta.url), 'utf8'));
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8'));
 const ran = { gitleaks: { ran: true }, opengrep: { ran: true }, 'osv-scanner': { ran: true } };
 const base = { policy, zone: 'green', files: ['src/App.tsx'], checks: { tests: 'success' }, tools: ran, findings: [] };
@@ -296,4 +297,33 @@ test('a clean pass opens with the mergeable message', () => {
     versions: { engine: '0', policy: '1', tools: {} },
   });
   assert.match(md.split('### Findings')[0], /This change can be merged\./);
+});
+
+test('solo policy: green-zone CI/infra self-serves, but the serious cases still block', () => {
+  // The standard policy routes green-zone infra to a person; the solo policy passes it.
+  assert.equal(decide({ ...base, files: ['.github/workflows/aifactory-gate.yml'] }).verdict, 'needs-person');
+  assert.equal(decide({ ...base, policy: soloPolicy, files: ['.github/workflows/aifactory-gate.yml'] }).verdict, 'pass');
+  assert.equal(decide({ ...base, policy: soloPolicy, files: ['CODEOWNERS'] }).verdict, 'pass');
+  assert.equal(decide({ ...base, policy: soloPolicy, files: ['infra/main.bicep', 'Dockerfile'] }).verdict, 'pass');
+  // Everything that genuinely needs itm8 is unchanged under the solo policy.
+  assert.equal(decide({ ...base, policy: soloPolicy, findings: gitleaksFindings(fixture('gitleaks.json')) }).verdict, 'fail', 'a secret still fails');
+  assert.equal(decide({ ...base, policy: soloPolicy, zone: 'yellow', files: ['.github/workflows/x.yml'] }).verdict, 'needs-person', 'yellow infra still needs a person');
+  assert.equal(decide({ ...base, policy: soloPolicy, zone: 'red', files: ['infra/main.bicep'] }).verdict, 'needs-person', 'red infra still needs a person');
+  assert.equal(decide({ ...base, policy: soloPolicy, tools: { ...ran, opengrep: { ran: false, error: 'exit 2' } } }).verdict, 'needs-person', 'a missing scanner still needs a person');
+  assert.equal(decide({ ...base, policy: soloPolicy, checks: { tests: 'failure' } }).verdict, 'fail', 'a failed test still fails');
+});
+
+test('solo policy differs from the standard policy only in green-zone CI/infra', () => {
+  const standard = JSON.parse(JSON.stringify(policy));
+  standard.version = soloPolicy.version;
+  standard.description = soloPolicy.description;
+  standard.areas.find((a) => a.id === 'ci-infra').action.green = 'none';
+  assert.deepEqual(soloPolicy, standard);
+});
+
+test('CLI: --profile selects the solo policy and is validated', () => {
+  const o = parseArgs(['run', '--repo', '/r', '--out', '/o', '--zone', 'green', '--level', '2', '--profile', 'solo']);
+  assert.equal(o.profile, 'solo');
+  assert.equal(parseArgs(['run', '--repo', '/r', '--out', '/o', '--zone', 'green']).profile, '');
+  assert.throws(() => parseArgs(['run', '--repo', '/r', '--out', '/o', '--zone', 'green', '--profile', 'duo']), /profile/);
 });

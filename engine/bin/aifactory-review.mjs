@@ -2,7 +2,7 @@
 // aifactory-review: the gate's review engine.
 //   aifactory-review scan    --repo DIR --out DIR
 //   aifactory-review verdict --repo DIR --out DIR --zone green|yellow|red --level 1|2|3 [--base REF]
-//                            [--check name=outcome ...] [--ai-review on|off]
+//                            [--check name=outcome ...] [--ai-review on|off] [--profile solo]
 //   aifactory-review run     (scan, then verdict; same options)
 // The AI review reads AIFACTORY_MODEL_ENDPOINT and AIFACTORY_MODEL_TOKEN (an Entra token).
 // Exit code: 0 when the verdict is pass or the level is advisory (1); 1 otherwise; 2 on a usage error.
@@ -20,7 +20,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
 export function parseArgs(argv) {
   const [command, ...rest] = argv;
-  const opts = { command, checks: {}, base: 'HEAD^1', level: 2, 'ai-review': 'off' };
+  const opts = { command, checks: {}, base: 'HEAD^1', level: 2, 'ai-review': 'off', profile: '' };
   for (let i = 0; i < rest.length; i++) {
     const key = rest[i];
     const value = rest[i + 1];
@@ -39,6 +39,7 @@ export function parseArgs(argv) {
     opts.level = Number(opts.level);
     if (![1, 2, 3].includes(opts.level)) throw new Error('--level must be 1, 2 or 3');
     if (!['on', 'off'].includes(opts['ai-review'])) throw new Error('--ai-review must be on or off');
+    if (!['', 'solo'].includes(opts.profile)) throw new Error("--profile must be 'solo' or empty");
   }
   return opts;
 }
@@ -104,7 +105,8 @@ async function main(argv) {
   mkdirSync(opts.out, { recursive: true });
   if (opts.command !== 'verdict') runScanners({ repo: opts.repo, out: opts.out });
   if (opts.command === 'scan') return 0;
-  const policy = JSON.parse(readFileSync(opts.policy ?? path.join(root, 'policy/policy.v1.json'), 'utf8'));
+  const policyPath = opts.policy ?? path.join(root, opts.profile === 'solo' ? 'policy/policy.solo.v1.json' : 'policy/policy.v1.json');
+  const policy = JSON.parse(readFileSync(policyPath, 'utf8'));
   const models = JSON.parse(readFileSync(path.join(root, 'policy/models.v1.json'), 'utf8'));
 
   let ai = { requested: false };

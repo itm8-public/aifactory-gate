@@ -33,3 +33,21 @@ test('an existing ruleset is updated, not duplicated', () => {
   assert.equal(calls[0].method, 'PUT');
   assert.equal(calls[0].path, 'repos/o/r/rulesets/99');
 });
+
+test('--profile solo parses; any other value is rejected', () => {
+  assert.deepEqual(parseArgs(['--repo', 'o/r', '--reviewer', 'u', '--profile', 'solo']), { apply: false, repo: 'o/r', reviewer: 'u', profile: 'solo' });
+  assert.throws(() => parseArgs(['--repo', 'o/r', '--reviewer', 'u', '--profile', 'duo']), /profile/);
+});
+
+test('solo profile drops the required code-owner review; nothing else changes', () => {
+  const solo = plan({ repo: 'o/r', reviewer: { type: 'Team', id: 42 }, profile: 'solo' });
+  const prRule = solo[0].body.rules.find((r) => r.type === 'pull_request');
+  assert.equal(prRule.parameters.require_code_owner_review, false, 'a solo customer has no second reviewer');
+  // The gate check and the bypass actor are untouched: the gate still gates the serious cases.
+  const checks = solo[0].body.rules.find((r) => r.type === 'required_status_checks').parameters.required_status_checks;
+  assert.deepEqual(checks, [{ context: REQUIRED_CHECK, integration_id: 15368 }]);
+  assert.deepEqual(solo[0].body.bypass_actors, [{ actor_id: 42, actor_type: 'Team', bypass_mode: 'pull_request' }]);
+  // The default (no profile) still requires a code-owner review.
+  const base = plan({ repo: 'o/r', reviewer: { type: 'Team', id: 42 } });
+  assert.equal(base[0].body.rules.find((r) => r.type === 'pull_request').parameters.require_code_owner_review, true);
+});
