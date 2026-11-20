@@ -66,18 +66,29 @@ jobs:
           REF: ${{ steps.image.outputs.ref }}
           VERSION: ${{ steps.v.outputs.version }}
           MAJOR: ${{ steps.v.outputs.major }}
+          NEXT: ${{ steps.v.outputs.next }}
         run: |
           {
             echo "### Image pushed"
             echo "\`$REF\`"
             echo
-            echo "Release it from a clone of main:"
+            echo "**1. Publish to the prerelease channel (\`$NEXT\`)** from a clone of main. This does not"
+            echo "touch the stable channel \`$MAJOR\`, so default customers are unaffected:"
             echo '```'
             echo "node scripts/release.mjs pin $REF"
             echo "git commit -am \"release: v$VERSION runs $REF\""
-            echo "git tag v$VERSION && git tag -f $MAJOR"
-            echo "git push origin v$VERSION && git push -f origin $MAJOR"
-            echo "gh release create v$VERSION --verify-tag --title v$VERSION --notes \"Engine image: $REF\""
+            echo "git tag v$VERSION && git tag -f $NEXT"
+            echo "git push origin v$VERSION && git push -f origin $NEXT"
+            echo "gh release create v$VERSION --verify-tag --title v$VERSION --notes \"Engine image: $REF\" --prerelease"
             echo "git reset --hard origin/main   # the release commit lives on the tags, not on main"
+            echo '```'
+            echo
+            echo "Opt-in repos pin \`@$NEXT\` to soak this version before it is promoted."
+            echo
+            echo "**2. Promote to stable (\`@$MAJOR\`)** once the soak is clean — this is what rolls it"
+            echo "out to all \`@$MAJOR\` customers:"
+            echo '```'
+            echo "git fetch origin $NEXT && git tag -f $MAJOR $NEXT && git push -f origin $MAJOR"
+            echo "gh release edit v$VERSION --prerelease=false"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -18,8 +18,9 @@ test('pin refuses a tag or another image', () => {
   assert.throws(() => pinImage(gate, `ghcr.io/x/other@sha256:${'a'.repeat(64)}`), /digest/);
 });
 
-test('version must match package.json', () => {
-  assert.deepEqual(checkVersion('v0.1.0', '0.1.0'), { version: '0.1.0', major: 'v0' });
+test('version must match package.json, and names the stable and prerelease channels', () => {
+  assert.deepEqual(checkVersion('v0.1.0', '0.1.0'), { version: '0.1.0', major: 'v0', next: 'v0-next' });
+  assert.deepEqual(checkVersion('2.3.4', '2.3.4'), { version: '2.3.4', major: 'v2', next: 'v2-next' });
   assert.throws(() => checkVersion('0.2.0', '0.1.0'), /does not match/);
   assert.throws(() => checkVersion('latest', '0.1.0'), /MAJOR/);
 });
