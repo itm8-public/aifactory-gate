@@ -1,0 +1,75 @@
+{
+  "version": "1.1-solo",
+  "description": "Solo-profile verdict policy. Identical to policy.v1.json except that, in the GREEN zone, ordinary CI/infrastructure changes do not require a person: a self-service customer with no second reviewer clears their own green-zone infra. Everything that genuinely needs itm8 is unchanged: any secret, the red zone, confirmed critical/high AI findings, and yellow/red-zone infra all still block. Selected only when the caller sets profile: solo; the default policy is unaffected.",
+  "failAtSeverity": {
+    "green": "high",
+    "yellow": "high",
+    "red": "medium"
+  },
+  "secrets": "fail",
+  "failedCheck": "fail",
+  "checkNotRun": "needs-person",
+  "missingTool": "needs-person",
+  "unreadableChanges": "needs-person",
+  "testsNotConfigured": {
+    "green": "none",
+    "yellow": "needs-person",
+    "red": "needs-person"
+  },
+  "areas": [
+    {
+      "id": "identity",
+      "reason": "Touches identity or access code or configuration",
+      "pattern": "auth(?!or(?!i[sz]))|security|permission|rbac|identity|(^|[^a-z])(sso|roles?)([^a-z]|$)",
+      "flags": "i",
+      "action": {
+        "green": "none",
+        "yellow": "needs-person",
+        "red": "needs-person"
+      }
+    },
+    {
+      "id": "migration",
+      "reason": "Touches a database migration",
+      "pattern": "(^|/)(drizzle|migrations?)/|(^|/)migrate\\.[a-z]+$|(^|/)drizzle\\.config\\.[a-z]+$|\\.sql$",
+      "flags": "i",
+      "action": {
+        "green": "none",
+        "yellow": "needs-person",
+        "red": "needs-person"
+      }
+    },
+    {
+      "id": "ci-infra",
+      "reason": "Touches CI, deployment or infrastructure configuration",
+      "pattern": "^\\.github/|(^|/)(azure-pipelines[^/]*\\.ya?ml|\\.gitlab-ci\\.yml|bitbucket-pipelines\\.yml)$|(^|/)infra/|\\.(bicep|bicepparam|tf|tfvars)$|(^|/)azure\\.yaml$|(^|/)Dockerfile[^/]*$|(^|/)\\.dockerignore$|(^|/)docker-compose[^/]*\\.ya?ml$|(^|/)CODEOWNERS$|^\\.aifactory/",
+      "flags": "",
+      "action": {
+        "green": "none",
+        "yellow": "needs-person",
+        "red": "needs-person"
+      }
+    },
+    {
+      "id": "dependencies",
+      "reason": "Changes a dependency manifest or lock file",
+      "pattern": "(^|/)(package\\.json|package-lock\\.json|npm-shrinkwrap\\.json|pnpm-lock\\.yaml|yarn\\.lock|pyproject\\.toml|uv\\.lock|poetry\\.lock|requirements[^/]*\\.txt)$",
+      "flags": "",
+      "action": {
+        "green": "none",
+        "yellow": "none",
+        "red": "needs-person"
+      }
+    }
+  ],
+  "aiReview": {
+    "critical": "needs-person",
+    "high": {
+      "green": "fail",
+      "yellow": "needs-person",
+      "red": "needs-person"
+    },
+    "reviewerSteering": "needs-person",
+    "notCompleted": "needs-person"
+  }
+}

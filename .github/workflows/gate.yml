@@ -14,6 +14,10 @@ on:
         description: Responsibility level. 1 is advisory (never blocks); 2 and 3 block on anything but pass.
         type: number
         default: 2
+      profile:
+        description: Onboarding profile. 'solo' lets an opted-in green-zone repo self-serve ordinary CI/infra changes (secrets, red zone, confirmed critical/high findings and yellow/red infra still need a person); empty keeps the standard policy.
+        type: string
+        default: ''
       test-command:
         description: The project's test command, run with bash. Empty means no tests are configured.
         type: string
@@ -109,6 +113,7 @@ jobs:
         env:
           ZONE: ${{ inputs.zone }}
           LEVEL: ${{ inputs.level }}
+          PROFILE: ${{ inputs.profile }}
           TESTS: ${{ inputs.test-command == '' && 'not-configured' || steps.tests.outcome }}
           AI_REVIEW: ${{ inputs.ai-review && 'on' || 'off' }}
           AIFACTORY_MODEL_ENDPOINT: ${{ inputs.review-endpoint }}
@@ -119,7 +124,7 @@ jobs:
             -e AIFACTORY_MODEL_ENDPOINT -e AIFACTORY_MODEL_TOKEN \
             -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/gate:/out" \
             "$GATE_IMAGE" run --repo /repo --out /out --zone "$ZONE" --level "$LEVEL" --base HEAD^1 \
-            --check "tests=$TESTS" --ai-review "$AI_REVIEW"
+            --check "tests=$TESTS" --ai-review "$AI_REVIEW" --profile "$PROFILE"
 
       - name: Summary
         if: ${{ !cancelled() }}
