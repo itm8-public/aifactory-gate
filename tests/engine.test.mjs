@@ -7,7 +7,7 @@ import { parseArgs } from '../engine/bin/aifactory-review.mjs';
 import { gitleaksFindings, osvFindings, sarifFindings, severityFromScore } from '../engine/src/facts.mjs';
 import { decide } from '../engine/src/policy.mjs';
 import { summary } from '../engine/src/report.mjs';
-import { scannerCommands } from '../engine/src/scan.mjs';
+import { runScanner, scannerCommands } from '../engine/src/scan.mjs';
 import { buildVerdict, readResults } from '../engine/src/verdict.mjs';
 
 const policy = JSON.parse(readFileSync(new URL('../policy/policy.v1.json', import.meta.url), 'utf8'));
@@ -197,4 +197,103 @@ test('scanner commands redact secrets and never fail on findings', () => {
   assert.ok(c.gitleaks.args.includes('--redact'));
   assert.deepEqual(c.gitleaks.args.slice(c.gitleaks.args.indexOf('--exit-code'), c.gitleaks.args.indexOf('--exit-code') + 2), ['--exit-code', '0']);
   assert.deepEqual(c['osv-scanner'].ok, [0, 1, 128]);
+});
+
+test('a scanner that fails transiently is retried and can still succeed', () => {
+  let calls = 0;
+  const run = () => (++calls < 3 ? { error: { code: 'ENOENT' } } : { status: 0 });
+  const r = runScanner({ ok: [0] }, { run, sleep: () => {} });
+  assert.deepEqual(r, { ran: true, status: 0 });
+  assert.equal(calls, 3, 'retried until it succeeded');
+});
+
+test('a scanner that keeps failing is recorded as not-run after the retries', () => {
+  let calls = 0;
+  const run = () => {
+    calls++;
+    return { status: 2, stderr: 'boom' };
+  };
+  const r = runScanner({ ok: [0] }, { run, attempts: 3, sleep: () => {} });
+  assert.equal(r.ran, false);
+  assert.equal(r.error, 'exit 2');
+  assert.equal(r.stderr, 'boom');
+  assert.equal(calls, 3, 'tried exactly the attempt limit, then gave up');
+});
+
+test('a scanner that succeeds first time is never retried (a finding exit code is a success)', () => {
+  let calls = 0;
+  const run = () => {
+    calls++;
+    return { status: 1 }; // osv-style: 1 means "vulnerabilities found", an ok code
+  };
+  const r = runScanner({ ok: [0, 1] }, { run, sleep: () => {} });
+  assert.deepEqual(r, { ran: true, status: 1 });
+  assert.equal(calls, 1, 'a real finding is not retried or suppressed');
+});
+
+test('the summary opens with the reason and the next step (needs-person)', () => {
+  const md = summary({
+    verdict: 'needs-person',
+    reasons: [{ action: 'needs-person', text: 'Touches CI, deployment or infrastructure configuration' }],
+    counts: { low: 0, medium: 0, high: 0, critical: 0 },
+    findings: [],
+    zone: 'green',
+    level: 2,
+    enforced: true,
+    versions: { engine: '0', policy: '1', tools: {} },
+  });
+  const head = md.split('### Why')[0];
+  assert.match(head, /\*\*Needs a person: Touches CI, deployment or infrastructure configuration\.\*\*/);
+  assert.match(head, /A reviewer must approve this change before it can be merged\./);
+  assert.ok(md.indexOf('A reviewer must approve') < md.indexOf('### Why'), 'the lead comes before the detail');
+});
+
+test('the summary opens with must-fix for a fail, then the push step', () => {
+  const md = summary({
+    verdict: 'fail',
+    reasons: [
+      { action: 'fail', text: '1 possible secret(s) in the code' },
+      { action: 'needs-person', text: 'Touches CI, deployment or infrastructure configuration' },
+    ],
+    counts: { low: 0, medium: 0, high: 0, critical: 1 },
+    findings: [],
+    zone: 'green',
+    level: 2,
+    enforced: true,
+    versions: { engine: '0', policy: '1', tools: {} },
+  });
+  const head = md.split('### Why')[0];
+  assert.match(head, /\*\*Must fix: 1 possible secret\(s\) in the code\.\*\*/);
+  assert.match(head, /push again/);
+});
+
+test('the lead names how many more reasons follow', () => {
+  const md = summary({
+    verdict: 'needs-person',
+    reasons: [
+      { action: 'needs-person', text: 'Touches CI, deployment or infrastructure configuration' },
+      { action: 'needs-person', text: 'No tests are configured' },
+    ],
+    counts: { low: 0, medium: 0, high: 0, critical: 0 },
+    findings: [],
+    zone: 'yellow',
+    level: 2,
+    enforced: true,
+    versions: { engine: '0', policy: '1', tools: {} },
+  });
+  assert.match(md, /\(and 1 more below\)/);
+});
+
+test('a clean pass opens with the mergeable message', () => {
+  const md = summary({
+    verdict: 'pass',
+    reasons: [],
+    counts: { low: 0, medium: 0, high: 0, critical: 0 },
+    findings: [],
+    zone: 'green',
+    level: 2,
+    enforced: true,
+    versions: { engine: '0', policy: '1', tools: {} },
+  });
+  assert.match(md.split('### Findings')[0], /This change can be merged\./);
 });

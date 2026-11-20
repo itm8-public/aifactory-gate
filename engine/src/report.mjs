@@ -1,20 +1,37 @@
 // The summary a business user reads on the pull request. Plain language, no secret values.
+// It opens with the concrete reason and the exact next step, then gives the detail.
 import { SEVERITIES } from './facts.mjs';
 
-const HEADLINE = {
-  pass: 'Passed. This change can be merged.',
-  fail: 'Not passed. Fix the points below and push again.',
-  'needs-person': 'Waiting for the itm8 review team. Someone from itm8 looks at this change before it can be merged.',
+// The one action the reader takes next, by verdict. Phrased so it holds whoever clears the
+// verdict: on an organization repository that is the itm8 review team, on a personal one the
+// repository admin, and for an ordinary green-zone infra change it can be the customer's own code
+// owner. The policy engine cannot see who approves, so the wording stays general.
+const NEXT_STEP = {
+  pass: 'This change can be merged.',
+  fail: 'Fix the point(s) below, then push again — the gate re-runs automatically.',
+  'needs-person': 'A reviewer must approve this change before it can be merged.',
 };
 
 const MAX_LISTED = 20;
+
+/** The opening line: the concrete reason(s) for the verdict, then the next step. */
+function lead(verdict, reasons) {
+  const next = NEXT_STEP[verdict] ?? '';
+  if (verdict === 'pass') return next;
+  const want = verdict === 'fail' ? 'fail' : 'needs-person';
+  const primary = reasons.filter((r) => r.action === want);
+  if (!primary.length) return next;
+  const verb = verdict === 'fail' ? 'Must fix' : 'Needs a person';
+  const more = primary.length > 1 ? ` (and ${primary.length - 1} more below)` : '';
+  return `**${verb}: ${escape(primary[0].text)}${more}.** ${next}`;
+}
 
 export function summary(record) {
   const { verdict, reasons, counts, findings, zone, level, enforced, versions } = record;
   const lines = [
     `## aifactory gate: ${verdict}`,
     '',
-    HEADLINE[verdict],
+    lead(verdict, reasons),
     '',
     ...(record.explanation ? ['### In plain words', '', escape(record.explanation), ''] : []),
     `Zone ${zone}, responsibility level ${level}${enforced ? '' : ' (advisory: this result does not block)'}.`,
