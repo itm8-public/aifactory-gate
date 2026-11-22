@@ -1,6 +1,6 @@
 # Solo / self-service redesign proposal
 
-*Internal design note for the itm8 AI Factory gate. Audience: the gate owner and maintainers.
+*Design note for the itm8 AI Factory gate. Audience: the gate owner and maintainers.
 It states the problem precisely, proposes a redesign with recommended defaults, and names the
 exact change points. It does not change any customer repository. Companion to
 [`gate-verdicts-explained.md`](gate-verdicts-explained.md).*
@@ -55,7 +55,7 @@ assumption fails.
    The only actor who can clear it is the ruleset's single bypass actor: for an org repo set up
    with `--team`, that is the itm8 review team ([`scripts/setup-repo.mjs:37-41`](../scripts/setup-repo.mjs)).
    A solo developer not on that team is blocked with no self-service path and no published SLA.
-   This is exactly the reported case — the only way through was an admin override.
+   Without someone from that team, the only way through is an admin override.
 
 2. **A transient scanner or AI-review failure becomes `needs-person` with no retry.** A scanner
    runs once ([`engine/src/scan.mjs:32-48`](../engine/src/scan.mjs)); if it fails to run, the tool
@@ -128,7 +128,7 @@ Do **not** touch `policy.v1.json` for this. The deterministic engine should keep
   it stays within the `@v0` contract (it changes setup, not the reusable workflow or the check
   name).
 
-### (ii) AI review on by default, with identity + consent automated — **setup + docs** *(and see Deliverable C)*
+### (ii) AI review on by default, with identity + consent automated — **setup + docs**
 
 - **Files:** [`scripts/setup-repo.mjs`](../scripts/setup-repo.mjs) (extend to create the OIDC
   federated credential on the customer's managed identity and to write the `ai-review` inputs into
@@ -139,7 +139,7 @@ Do **not** touch `policy.v1.json` for this. The deterministic engine should keep
   empty endpoint/client-id, or every run signs in, fails, and returns `needs-person`
   ([`gate.yml:85-104`](../.github/workflows/gate.yml), `notCompleted` → `needs-person`).
 - **Recommendation: adopt, but sequence it after (i) and (iii).** The value is real, but it
-  depends on the identity automation (Deliverable C) existing first.
+  depends on the identity automation existing first.
 
 ### (iii) Retry transient scanner / AI-review failures before `needs-person` — **engine change**
 
@@ -179,10 +179,10 @@ Do **not** touch `policy.v1.json` for this. The deterministic engine should keep
 - **Recommendation: adopt last, as the packaging of (i)–(v).** It is convenience, not new
   behaviour; build it once (i)–(v) are settled so it does not encode a moving target.
 
-## Deliverable D — delivery / promotion view *(secondary)*
+## Delivery / promotion view *(secondary)*
 
-The customer also raised: a prod environment, build-once/promote-the-SHA image, post-deploy
-agent tests, and a short (1–2h) prod window via cron or dispatch with a concurrency lock.
+Related delivery questions come up alongside this: a prod environment, build-once/promote-the-SHA
+image, post-deploy agent tests, and a short (1–2h) prod window via cron or dispatch with a concurrency lock.
 
 itm8's view:
 
