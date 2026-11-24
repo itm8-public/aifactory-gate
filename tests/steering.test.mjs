@@ -39,7 +39,8 @@ test('the verifier gets the meaning of each rule, and the steering test only whe
   const steering = verifyPrompt({ candidates: [c], zone: 'green' });
   assert.ok(steering.system.includes(MODEL_RULES['reviewer-steering']));
   assert.ok(steering.system.includes(STEERING_GUIDE));
-  assert.match(steering.system, /Refute a reviewer-steering finding when the text only describes/);
+  assert.match(steering.system, /Confirm a reviewer-steering finding when the text tells a reviewer or a model what to report, skip, approve or conclude, wherever it is \(a README, an HTML comment/);
+  assert.match(steering.system, /Refute it when the text only describes/);
   const other = verifyPrompt({ candidates: [{ ...c, rule: 'injection' }, { ...c, rule: 'eval-of-dynamic-code' }], zone: 'green' });
   assert.ok(other.system.includes(`- injection: ${MODEL_RULES.injection}`));
   assert.match(other.system, /- eval-of-dynamic-code: a rule of the itm8 scanner rule pack/);
