@@ -2,6 +2,7 @@
 // Returns findings for the policy; never a verdict. Any error is returned, never swallowed, so the
 // policy can turn it into needs-person.
 import { checkEvidence } from './evidence.mjs';
+import { hiddenTextFindings, revealHidden } from './hidden.mjs';
 import { EXPLAIN_SCHEMA, FIND_SCHEMA, MODEL_RULES, PROMPT_VERSION, VERIFY_SCHEMA, explainPrompt, findPrompt, verifyPrompt } from './prompts.mjs';
 
 /**
@@ -25,18 +26,29 @@ export async function reviewWithModels({ diff, readFile, scannerRules, zone, mod
     return data;
   };
 
-  const found = await call('find', findPrompt({ ...diff, rules, zone }), FIND_SCHEMA, 'findings');
+  // Hidden text is found without a model, and the models see it in a visible form (so do their
+  // quotes, which the evidence check compares with the same visible form of the file).
+  const hidden = hiddenTextFindings(diff.files);
+  state.hiddenText = hidden.length;
+  const shown = { ...diff, files: diff.files.map((f) => ({ ...f, patch: revealHidden(f.patch) })) };
+  const readShown = (p) => revealHidden(readFile(p));
+  const withHidden = (findings) => [
+    ...hidden,
+    ...findings.filter((f) => !(f.rule === 'reviewer-steering' && hidden.some((h) => h.file === f.file && h.line === f.line))),
+  ];
+
+  const found = await call('find', findPrompt({ ...shown, rules, zone }), FIND_SCHEMA, 'findings');
   state.found = found.findings.length;
   const { kept, dropped } = checkEvidence({
     candidates: found.findings,
-    readFile,
+    readFile: readShown,
     changed: new Set(diff.files.map((f) => f.path)),
     rules: new Set(Object.keys(rules)),
   });
   state.dropped = dropped.map((d) => ({ file: d.file, line: d.line, rule: d.rule, why: d.dropped }));
-  if (kept.length === 0) return { findings: [], state };
+  if (kept.length === 0) return { findings: withHidden([]), state };
 
-  const verified = await call('verify', verifyPrompt({ candidates: kept, zone }), VERIFY_SCHEMA, 'verification');
+  const verified = await call('verify', verifyPrompt({ candidates: kept, zone, rules }), VERIFY_SCHEMA, 'verification');
   const byIndex = new Map(verified.results.map((r) => [r.index, r]));
   const findings = [];
   kept.forEach((c, i) => {
@@ -56,7 +68,7 @@ export async function reviewWithModels({ diff, readFile, scannerRules, zone, mod
       outcome: v.outcome,
     });
   });
-  return { findings, state };
+  return { findings: withHidden(findings), state };
 }
 
 /** Model C: plain words for the summary. It sees the result, never the code. */

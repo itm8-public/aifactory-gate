@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { decide } from '../engine/src/policy.mjs';
-import { CANARY_REPO, CASES, CHANNEL, CHECK_NAME, judge, latestRun, parseArgs, run } from '../scripts/canary.mjs';
+import { CANARY_REPO, CASES, CHANNEL, CHECK_NAME, judge, judgeComment, judgeReuse, latestRun, parseArgs, run } from '../scripts/canary.mjs';
 import { CANARY_CONTEXT, GATE_REPO } from '../scripts/release.mjs';
 
 const policy = JSON.parse(readFileSync(new URL('../policy/policy.v1.json', import.meta.url), 'utf8'));
@@ -29,6 +29,7 @@ const facts = {
     aiReview: { requested: true, missing: ['review-endpoint', 'azure-client-id', 'azure-tenant-id'] },
   },
   'canary/ai-review': { files: ['src/clamp.mjs', 'test/clamp.test.mjs'], findings: [], aiReview: { requested: true } },
+  'canary/describes-review': { files: ['README.md'], findings: [], aiReview: { requested: true } },
 };
 const recordFor = (branch, extra = {}) => {
   const f = facts[branch];
@@ -89,6 +90,7 @@ test('latestRun takes the newest pull_request run', () => {
     { id: 3, event: 'push', run_number: 9, run_attempt: 1 },
   ];
   assert.equal(latestRun(runs).id, 2);
+  assert.equal(latestRun(runs, 'push').id, 3);
 });
 
 test('options', () => {
@@ -98,7 +100,7 @@ test('options', () => {
 });
 
 /** A fake GitHub: the canary repository's branches, runs and verdicts, and the gate's tag. */
-function fakeGitHub({ verdicts = {}, variable = false, movesTag = false, pinned = true, lostOnce } = {}) {
+function fakeGitHub({ verdicts = {}, variable = false, movesTag = false, pinned = true, lostOnce, noComment = false, ranAgain = false } = {}) {
   const calls = [];
   let tagReads = 0;
   const image = pinned ? `ghcr.io/itm8-public/aifactory-review@sha256:${'a'.repeat(64)}` : 'ghcr.io/itm8-public/aifactory-review:0.1.0';
@@ -109,6 +111,10 @@ function fakeGitHub({ verdicts = {}, variable = false, movesTag = false, pinned 
   // `lostOnce`: GitHub starts no run for the first commit pushed to that branch.
   const lost = (c, sha) => c.branch === lostOnce && sha === `head-${c.branch}+`;
   const runFor = (sha) => [...byRun].find(([, c]) => heads.get(c.branch) === sha && !lost(c, sha))?.[0];
+  // The push of a merge commit (parents: the judged base, the case head) gets run 100 + the case's run.
+  const PUSH = 100;
+  const pushRunFor = (sha) => [...byRun].find(([, c]) => c.reuseOn && sha === 'BASE+')?.[0];
+  const verdictOf = (c) => verdicts[c.branch] ?? c.verdict;
   const gh = (args, input) => {
     calls.push({ args, body: input ? JSON.parse(input) : undefined });
     const [, ...rest] = args;
@@ -132,24 +138,36 @@ function fakeGitHub({ verdicts = {}, variable = false, movesTag = false, pinned 
       throw Object.assign(new Error('gh: Not Found (HTTP 404)'), { stderr: 'HTTP 404' });
     }
     let m;
-    if ((m = p.match(/pulls\?state=open&head=itm8-public:(.+)$/))) return JSON.stringify([{ html_url: `https://github.com/${CANARY_REPO}/pull/${m[1]}` }]);
+    if ((m = p.match(/pulls\?state=open&head=itm8-public:(.+)$/))) {
+      const number = CASES.findIndex((c) => c.branch === decodeURIComponent(m[1])) + 1;
+      return JSON.stringify([{ html_url: `https://github.com/${CANARY_REPO}/pull/${number}`, number }]);
+    }
+    if ((m = p.match(/issues\/(\d+)\/comments/))) {
+      const c = CASES[Number(m[1]) - 1];
+      const v = verdictOf(c);
+      return JSON.stringify(v === 'pass' || noComment ? [] : [{ user: { login: 'github-actions[bot]' }, body: `<!-- aifactory-gate -->\n## aifactory gate: ${v}\n\n### Who acts\n`, updated_at: '2026-11-24T12:00:00Z' }]);
+    }
     if ((m = p.match(/git\/ref\/heads\/(.+)$/))) return JSON.stringify({ object: { sha: heads.get(decodeURIComponent(m[1])) } });
     if (p.includes('/git/commits/')) return JSON.stringify({ tree: { sha: 'tree' } });
     if ((m = p.match(/actions\/runs\?head_sha=([^&]+)/))) {
+      const pushed = pushRunFor(m[1]);
+      if (pushed) return JSON.stringify({ workflow_runs: [{ id: PUSH + pushed, event: 'push', status: 'completed', run_number: PUSH + pushed, run_attempt: 1 }] });
       const id = runFor(m[1]);
       return JSON.stringify({ workflow_runs: id ? [{ id, event: 'pull_request', status: 'completed', run_number: id, run_attempt: 1 }] : [] });
     }
     if ((m = p.match(/actions\/runs\/(\d+)\/jobs$/))) {
-      const c = byRun.get(Number(m[1]));
-      const v = verdicts[c.branch] ?? c.verdict;
+      const c = byRun.get(Number(m[1]) % PUSH);
+      const v = verdictOf(c);
       return JSON.stringify({ jobs: [job(v === 'pass' ? 'success' : 'failure')] });
     }
     if ((m = p.match(/actions\/runs\/(\d+)$/))) return JSON.stringify(goodRun(Number(m[1])));
     throw new Error(`unexpected call: ${args.join(' ')}`);
   };
   const download = (id) => {
-    const c = byRun.get(id);
-    const record = recordFor(c.branch, c.explanation ? { explanation: 'Plain words.' } : {});
+    const c = byRun.get(id % PUSH);
+    const extra = { ...(c.explanation ? { explanation: 'Plain words.' } : {}), ...(c.reuseOn ? { subject: { tree: 'T', base: 'BASE' } } : {}) };
+    if (id > PUSH && !ranAgain) extra.reused = { runId: id - PUSH };
+    const record = recordFor(c.branch, extra);
     return verdicts[c.branch] ? { ...record, verdict: verdicts[c.branch] } : record;
   };
   return { gh, download, calls, writes: () => calls.filter((c) => c.args[1] === '--method') };
@@ -168,13 +186,49 @@ test('a green canary pushes one empty commit per case and records success on the
   const status = writes.find((w) => w.args[3] === `repos/${GATE_REPO}/statuses/${GATE_SHA}`);
   assert.equal(status.body.state, 'success');
   assert.equal(status.body.context, CANARY_CONTEXT);
-  assert.match(status.body.description, /^4 of 4 cases as expected on @v0-next, 1 skipped$/);
+  assert.match(status.body.description, /^4 of 4 cases as expected on @v0-next, 2 skipped$/);
 });
 
-test('the full AI review case runs once its variable is set', () => {
+test('the AI review cases run once their variable is set; the merge of describes-review is pushed and reuses the verdict', () => {
   const fake = fakeGitHub({ variable: true });
-  assert.equal(run([], { ...fake, ...quiet }), 0);
-  assert.match(fake.writes().at(-1).body.description, /^5 of 5 cases/);
+  const lines = [];
+  assert.equal(run([], { ...fake, sleep: () => {}, out: (l) => lines.push(l) }), 0);
+  assert.match(fake.writes().at(-1).body.description, /^6 of 6 cases/);
+  const writes = fake.writes();
+  const merge = writes.find((w) => w.args[3].endsWith('/git/commits') && w.body.tree === 'T');
+  assert.deepEqual(merge.body.parents, ['BASE', 'head-canary/describes-review+'], 'a merge of the judged base and the pull request head');
+  const moved = writes.filter((w) => w.args[2] === 'PATCH' && w.args[3].includes('/git/refs/heads/'));
+  assert.deepEqual(moved.filter((w) => w.body.force).map((w) => w.args[3]), [`repos/${CANARY_REPO}/git/refs/heads/canary-push/describes-review`], 'only the push branch is moved with force');
+  assert.match(lines.join('\n'), /push of the merge \(canary-push\/describes-review\): /);
+});
+
+test('a push of the merge that runs again instead of reusing is a mismatch', () => {
+  const fake = fakeGitHub({ variable: true, ranAgain: true });
+  const lines = [];
+  assert.equal(run([], { ...fake, sleep: () => {}, out: (l) => lines.push(l) }), 1);
+  assert.match(lines.join('\n'), /canary-push\/describes-review: it ran again instead of reusing the pull request verdict/);
+});
+
+test('a non-pass case without the gate comment is a mismatch', () => {
+  const fake = fakeGitHub({ noComment: true });
+  const lines = [];
+  assert.equal(run([], { ...fake, sleep: () => {}, out: (l) => lines.push(l) }), 1);
+  assert.match(lines.join('\n'), /MISMATCH canary\/secret[\s\S]*0 gate comments on the pull request, expected 1/);
+});
+
+test('judgeComment and judgeReuse', () => {
+  const c = kase('canary/platform');
+  const body = '<!-- aifactory-gate -->\n## aifactory gate: needs-person\n\n### Who acts\n';
+  const bot = { login: 'github-actions[bot]' };
+  assert.deepEqual(judgeComment(c, [{ user: bot, body, updated_at: '2026-11-24T12:00:00Z' }], '2026-11-24T11:00:00Z'), []);
+  assert.deepEqual(judgeComment(c, [{ user: bot, body, updated_at: '2026-11-24T10:00:00Z' }], '2026-11-24T11:00:00Z'), ['the comment was not updated by this run']);
+  assert.deepEqual(judgeComment(c, [{ user: bot, body: '<!-- aifactory-gate -->\n## aifactory gate: pass' }]), ['the comment does not show needs-person', 'the comment does not say who acts']);
+  assert.deepEqual(judgeComment(c, [{ user: { login: 'someone' }, body }]), ['0 gate comments on the pull request, expected 1']);
+  assert.deepEqual(judgeComment(kase('canary/pass'), []), [], 'a pass needs no comment');
+  const d = kase('canary/describes-review');
+  const record = recordFor('canary/describes-review', { explanation: 'x', reused: { runId: 7 } });
+  assert.deepEqual(judgeReuse(d, { run: goodRun(8), job: job('success'), record }, gate, 7), []);
+  assert.deepEqual(judgeReuse(d, { run: goodRun(8), job: job('success'), record: { ...record, reused: { runId: 6 } } }, gate, 7), ['it reused run 6, not 7']);
 });
 
 test('a mismatch exits 1 and records failure', () => {

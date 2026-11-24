@@ -1,7 +1,7 @@
 # Why the gate asks for a person, and how a change gets merged
 
-*A plain-language reference for teams using the itm8 AI Factory gate. It describes exactly
-what the gate does today (version 0.1.0). Nothing here needs any code change to be true.*
+*A plain-language reference for teams using the itm8 AI Factory gate. Written for version 0.1.0;
+the sections on steering, reuse, who acts and the emergency bypass describe 0.5.0.*
 
 ## The short answer
 
@@ -78,8 +78,9 @@ and anything under `.aifactory/` ([`policy/policy.v1.json:42-52`](../policy/poli
 ### Reading it for a specific pull request
 
 Every run writes a **"Why"** section in the pull request's job summary, listing the exact
-reason(s) for the verdict ([`engine/src/report.mjs:23-27`](../engine/src/report.mjs)). That is
-the authoritative answer for any single PR — match the reason text to the table above.
+reason(s) for the verdict ([`engine/src/report.mjs`](../engine/src/report.mjs)), with **"Who acts"**
+and **"Fix it"** above it. That is the authoritative answer for any single PR — match the reason
+text to the table above.
 
 Worked example — the gate-setup PR (installing the gate):
 
@@ -111,6 +112,40 @@ When it is **on**, it can only make a verdict *stricter*, never looser:
 rules above are independent of the AI review. The setup PR will still need a person with the AI
 review on.
 
+### Text that tries to steer the AI review
+
+The reason "Text in the change tries to steer the AI review (file line N)" means the change holds an
+instruction to the reviewer or to a model about what to report, skip or conclude ("ignore",
+"approve", "do not report", "you are now …"), or text hidden from people that a model would read
+(invisible characters, an HTML comment in Markdown addressed to an AI). Hidden characters are found
+without a model.
+
+Text that only **describes** the gate or the review is not steering: a README that explains what
+the gate checks and who clears `needs-person`, the `AGENTS.md` rules for coding assistants, or the
+prompt an app sends to its own model. Since engine 0.5.0 (prompt version 2) the AI review is told
+the difference and measured on it; see the evaluation numbers in the release notes.
+
+## A push to main reuses the pull request's verdict
+
+When a push to `main` holds exactly the change a pull request's gate run already judged — the same
+tree on the same base tree, the same gate version and the same caller inputs — the gate takes that
+verdict instead of running again. The summary says so and links the run it came from. Same change,
+same verdict, and the AI review is paid for once. Anything that differs (another commit on `main`
+in between, a rebase of several commits, a changed caller setting) means a normal run.
+
+This needs `actions: read` in the caller's `permissions` (and `pull-requests: read` or `write`
+to find squash merges). Without it the gate runs in full, as before.
+
+## Who acts, and the pull request comment
+
+Every result that is not `pass` says **who acts** (you, the contributor; itm8; or the customer
+admin), **why**, and a short **Fix it** block: plain steps, and a prompt you can paste into any AI
+tool (Claude, GitHub Copilot, Lovable, Cursor) or hand to a person. The prompt only names files,
+lines and the gate's own rules; it never repeats a secret or text from the change.
+
+The same text goes on the pull request as one comment, updated on every run, when the caller
+grants `pull-requests: write`. Without it, the job summary has it.
+
 ## How a `needs-person` verdict is cleared today
 
 The gate's ruleset lets one **bypass actor** merge past a `needs-person` check. Who that is
@@ -125,6 +160,27 @@ depends on how the repository is owned ([`scripts/setup-repo.mjs:37-41`](../scri
 There is no self-service label, no re-run-to-clear path, and no published response time in the
 gate today. This is the main friction for a solo developer on an organization repository, and the
 redesign proposal addresses it directly.
+
+## Emergency bypass
+
+For when **the gate itself fails** — an itm8 problem, not a finding. The summary then reads "The
+gate could not finish": a scanner gave no result, the AI review could not be reached, or the gate
+produced no verdict at all. It is never for `fail` or for a `needs-person` about the change itself:
+those are about the code, and a bypass would let a secret or a real problem into `main`.
+
+1. **Run the job again** (the run's page, *Re-run jobs*). Most outages pass in minutes.
+2. **Tell itm8**, with the link to the run. On an organization repository the itm8 review team can
+   merge past the check: it is the ruleset's bypass actor. On a personal repository the repository
+   admin can.
+3. **Only if the change cannot wait and itm8 cannot be reached**, the customer admin (an
+   organization owner, or an admin of the repository) can:
+   - open the repository's *Settings → Rules → Rulesets → aifactory gate*;
+   - set *Enforcement status* to *Disabled*, merge the pull request, and set it back to *Active*
+     straight away;
+   - tell itm8 the same day: the pull request, and why it could not wait.
+
+   GitHub records both ruleset changes in the organization's audit log. The push to `main` after
+   the merge runs the gate as usual, so the result is on record either way.
 
 ## Is `gate / verdict` a stable name to depend on?
 
