@@ -12,8 +12,23 @@ Status: 0.1.0. Facts (tests, secrets, code security, dependencies) are live-test
    - **Opengrep** with the itm8 rule pack in `rules/opengrep`: code security,
    - **OSV-Scanner**: known vulnerabilities in dependencies (sends package names and versions, not code, to osv.dev).
 3. The engine reads the results and the changed paths and applies `policy/policy.v1.json`.
-4. The verdict, the reasons and the versions go to the job summary and a `verdict.json` artifact (kept 90 days).
+4. The verdict, the reasons and the versions go to the job summary and a `verdict.json` artifact (kept 90 days). Anything but `pass` says **who acts** (the contributor, itm8 or the customer admin), **why**, and has a **Fix it** block: plain steps and a prompt to paste into any AI tool. When the gate itself fails, it says so and points to the [emergency bypass](docs/gate-verdicts-explained.md#emergency-bypass).
 5. The ruleset on `main` requires the check `gate / verdict`. A `needs-person` verdict is cleared by the itm8 review team, the ruleset's bypass actor, which GitHub records in the audit log.
+6. A push to `main` that holds exactly the change a pull request's gate run judged (the same tree on the same base tree, the same gate version, the same caller inputs) reuses that verdict and says from which run. Same change, same verdict, and the AI review runs once.
+
+### Caller permissions
+
+The verdict job only ever has `contents: read` and `id-token: write`. Two more permissions in the caller turn on two conveniences; each runs in a job of its own that runs no repository code:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write # the AI review signs in with GitHub OIDC
+  actions: read # a push to main reuses the pull request's verdict
+  pull-requests: write # the result as one pull request comment (also finds squash merges for the reuse)
+```
+
+Without them the gate works as before: the push to `main` runs in full, and the result is in the job summary only. `gate.yml` cannot ask for them itself: GitHub refuses to start a called workflow that asks for more than its caller grants.
 
 ## AI review (off by default)
 
@@ -27,7 +42,7 @@ When the caller sets `ai-review: true`, the gate signs in to itm8's review Found
 | 4. Decide         | The policy               | Same input, same verdict                                                                           |
 | 5. Explain        | Model C (cheapest)       | Writes the plain-language paragraph; it sees the result, never the code, and cannot change it    |
 
-Code under review is passed as data, never as instructions; text in the change that addresses the reviewer is itself a finding (`reviewer-steering`). A model can only make the verdict stricter, and a review that does not complete is `needs-person`. Deployments per role are in `policy/models.v1.json`.
+Code under review is passed as data, never as instructions. Text that tries to steer the review is itself a finding (`reviewer-steering`): an instruction to the reviewer or a model about what to report, skip or conclude, also when it is dressed up as documentation, and text hidden from people (invisible Unicode tag characters are found without a model; bidirectional controls are shown to the models). Text that only describes the gate or the review, instructions for coding assistants (`AGENTS.md`) and an app's own prompts are not steering (prompt version 2). A model can only make the verdict stricter, and a review that does not complete is `needs-person`. Deployments per role are in `policy/models.v1.json`.
 
 Before a model, prompt or policy change is released, run the evaluation set (kept private) with `node scripts/eval.mjs CASES_DIR --max-missed N --max-false N`; it reports found, missed and false flags per case.
 
@@ -141,13 +156,15 @@ The canary repository holds synthetic content only. Each case is a branch with o
 | `canary/platform`          | `infra/main.bicep`                          | `needs-person`: CI, deployment or infrastructure                 |
 | `canary/ai-values-missing` | A clean change, AI review on, values empty  | `needs-person`: the AI review values are missing                 |
 | `canary/ai-review`         | A clean change, AI review fully on          | `pass` with "In plain words"; skipped until the canary's review identity values are set as its repository variables |
+| `canary/describes-review`  | A README that explains the gate and the AI review, AI review fully on | `pass`: describing the review is not steering it. Then a merge commit of it is pushed to `canary-push/describes-review`, and that push run must reuse the pull request's verdict |
 
-`scripts/canary.mjs` pushes an empty commit to each branch, because a push by a person starts the workflow and one made with the workflow token would not. If GitHub starts no run for a branch within five minutes, it pushes once more. Then it waits for the runs (up to 30 minutes) and checks four things for each case:
+`scripts/canary.mjs` pushes an empty commit to each branch, because a push by a person starts the workflow and one made with the workflow token would not. If GitHub starts no run for a branch within five minutes, it pushes once more. Then it waits for the runs (up to 30 minutes) and checks each case:
 
 - the run used `gate.yml` at the commit `@v0-next` points at, and that commit pins an image digest;
 - the `gate / verdict` check passed only for a `pass`;
 - `verdict.json` has the expected verdict, exactly the expected reasons, and that commit's engine version;
-- for the full AI review case, the plain-words explanation is there.
+- for the AI review cases, the plain-words explanation is there;
+- for a verdict other than `pass`, the pull request has the gate's comment, updated by this run, saying who acts.
 
 The expected verdicts live in `CASES` in `scripts/canary.mjs`. `tests/canary.test.mjs` checks them against the policy, so a change to the policy or to a reason's wording fails the tests until `CASES` is changed with it.
 

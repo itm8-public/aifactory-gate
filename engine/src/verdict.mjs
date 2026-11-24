@@ -5,6 +5,7 @@ import path from 'node:path';
 import { READERS } from './facts.mjs';
 import { countBySeverity, decide } from './policy.mjs';
 import { summary } from './report.mjs';
+import { subjectOf } from './reuse.mjs';
 
 /** Paths changed between the merge base of `base` and HEAD, or null when git cannot tell. */
 export function changedFiles(repo, base) {
@@ -45,11 +46,13 @@ export function readResults(results) {
 }
 
 /**
- * Applies the policy and writes verdict.json and summary.md.
+ * Applies the policy and writes verdict.json, summary.md and comment.md (the pull request comment).
  * `ai` is the AI review's outcome when it was requested: { requested, findings, state, error, missing }.
  * `explain` (optional) turns the record into plain words; its failure only drops the explanation.
+ * `subject` is the change judged (reuse.mjs subjectOf; read from git when not given), `inputs` the
+ * caller's inputs as gate.yml passes them, `context` { ownerType, runUrl } for the summary.
  */
-export async function buildVerdict({ repo, results, zone, level, base, checks, policy, versions, files, ai = { requested: false }, explain }) {
+export async function buildVerdict({ repo, results, zone, level, base, checks, policy, versions, files, ai = { requested: false }, explain, profile = '', inputs, subject, context = {} }) {
   const { tools } = readResults(results);
   // Scanners report paths as they saw them (/repo/src/a.ts in the image); show them repository-relative.
   const prefix = `${repo.replace(/[\\/]+$/, '')}/`;
@@ -62,15 +65,19 @@ export async function buildVerdict({ repo, results, zone, level, base, checks, p
     verdict,
     zone,
     level,
+    profile,
     enforced: level >= 2,
     reasons,
     counts: countBySeverity(findings),
     tools,
     checks,
-    aiReview: ai.requested ? { ...ai.state, error: ai.error ?? null, ...(ai.missing?.length ? { missing: ai.missing } : {}) } : { requested: false },
+    aiReview: ai.requested ? { requested: true, ...ai.state, error: ai.error ?? null, ...(ai.missing?.length ? { missing: ai.missing } : {}) } : { requested: false },
     changedFiles: changed === null ? null : changed.length,
     findings,
     versions,
+    // What was judged: a push to main with exactly this change can reuse the verdict (reuse.mjs).
+    subject: subject !== undefined ? subject : subjectOf(repo, base, inputs),
+    context,
     decidedAt: new Date().toISOString(),
   };
   if (explain) {
@@ -82,5 +89,6 @@ export async function buildVerdict({ repo, results, zone, level, base, checks, p
   }
   writeFileSync(path.join(results, 'verdict.json'), JSON.stringify(record, null, 2));
   writeFileSync(path.join(results, 'summary.md'), summary(record));
+  writeFileSync(path.join(results, 'comment.md'), summary(record, { comment: true }));
   return record;
 }

@@ -27,9 +27,17 @@ export function matches(finding, expected) {
   return true;
 }
 
+/**
+ * Whether a finding can change the verdict, as the policy sees it: anything above low, and a
+ * reviewer-steering finding at any severity (the policy asks a person for every one).
+ */
+export function blocks(finding) {
+  return finding.severity !== 'low' || finding.rule === 'reviewer-steering';
+}
+
 /** Scores one case: which expectations were found, and which findings matched nothing. */
 export function score(findings, expect) {
-  const blocking = findings.filter((f) => f.severity !== 'low');
+  const blocking = findings.filter(blocks);
   const found = expect.filter((e) => blocking.some((f) => matches(f, e)));
   const missed = expect.filter((e) => !found.includes(e));
   const falseFlags = blocking.filter((f) => !expect.some((e) => matches(f, e)));

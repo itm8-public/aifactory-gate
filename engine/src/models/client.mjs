@@ -32,7 +32,18 @@ export function createModelClient({ endpoint, token, fetchImpl = fetch }) {
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`${deployment}: HTTP ${res.status}`);
+    if (!res.ok) {
+      // The service's error code (for example content_filter) says whether the change or the
+      // service caused it; the message itself can quote the change, so it is left out.
+      let code = '';
+      try {
+        const body = await res.json();
+        code = String(body?.error?.code ?? body?.error?.innererror?.code ?? '').replace(/[^\w.-]/g, '').slice(0, 40);
+      } catch {
+        // no JSON body
+      }
+      throw new Error(`${deployment}: HTTP ${res.status}${code ? ` (${code})` : ''}`);
+    }
     const json = await res.json();
     const content = json.choices?.[0]?.message?.content;
     if (typeof content !== 'string') throw new Error(`${deployment}: no message content`);

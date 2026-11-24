@@ -2,9 +2,13 @@
 // really in that file near that line, the file is part of the change, and its rule exists.
 // This removes invented findings before any second model call.
 
+import { revealHidden } from './hidden.mjs';
+
 const WINDOW = 3;
 const MIN_QUOTE = 8;
-const norm = (s) => s.replace(/\s+/g, ' ').trim();
+// A quote may copy hidden characters raw or in the visible form the model was shown; the file text
+// given to this check is in the visible form.
+const norm = (s) => revealHidden(s).replace(/\s+/g, ' ').trim();
 
 /**
  * @param {object} input

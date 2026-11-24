@@ -43,6 +43,12 @@ test('low findings are neither found nor false flags', () => {
   assert.equal(s.falseFlags.length, 0);
 });
 
+test('a steering finding counts at any severity, as the policy asks a person for every one', () => {
+  const unconfirmed = { file: 'README.md', rule: 'reviewer-steering', line: 3, severity: 'low' };
+  assert.equal(score([unconfirmed], []).falseFlags.length, 1);
+  assert.equal(score([unconfirmed], [{ file: 'README.md', rule: 'reviewer-steering', line: 3 }]).found, 1);
+});
+
 test('eval run on the sample cases: found, missed, false flags', async () => {
   const good = await runEval({ casesDir, models, complete: fakeModels() });
   assert.deepEqual(good.totals, { expected: 1, found: 1, missed: 0, falseFlags: 0, errors: 0 });
