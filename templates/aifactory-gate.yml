@@ -24,9 +24,12 @@ jobs:
       #               # confirmed critical/high findings and yellow/red infra still need a person.
       node-version: '24'
       test-command: npm ci && npm test
-      # The AI review, once the customer has agreed to it and itm8 has provisioned the identity
-      # (see docs/ai-review-onboarding.md). At solo onboarding, set ai-review: true with the three
-      # values below only when they are provided; leaving them empty keeps the review off.
+      # The AI review. The values come from the customer's page in the AI Factory Management App,
+      # once the customer's consent is recorded there; the review identity lives in itm8's tenant,
+      # so nothing is set up in the customer's Azure. Turn it on with
+      # `setup-repo.mjs --repo OWNER/NAME --ai-review ...` (it refuses empty or malformed values
+      # and opens a pull request), not by hand: ai-review: true with an empty value makes every
+      # PR need a person. See docs/ai-review-onboarding.md.
       ai-review: false
       review-endpoint: ''
       azure-client-id: ''

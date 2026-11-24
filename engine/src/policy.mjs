@@ -13,7 +13,8 @@ const STRENGTH = { none: 0, pass: 0, 'needs-person': 1, fail: 2 };
  * @param {Record<string,string>} input.checks check name to outcome (success, failure, skipped, cancelled, not-configured)
  * @param {Record<string,{ran:boolean, error?:string}>} input.tools scanner name to whether it produced a result
  * @param {object[]} input.findings  findings from facts.mjs and, when it ran, the AI review
- * @param {{requested: boolean, error?: string}} [input.aiReview]
+ * @param {{requested: boolean, error?: string, missing?: string[]}} [input.aiReview] `missing`: caller
+ *        inputs left empty, so the review was not tried
  */
 export function decide({ policy, zone, files, checks, tools, findings, aiReview = { requested: false } }) {
   if (!ZONES.includes(zone)) throw new Error(`unknown zone "${zone}"`);
@@ -44,7 +45,10 @@ export function decide({ policy, zone, files, checks, tools, findings, aiReview 
   // by a second model; an unconfirmed one is listed as low and cannot block.
   if (aiReview.requested) {
     const ai = policy.aiReview;
-    if (aiReview.error) add(ai.notCompleted, `The AI review did not complete (${aiReview.error})`);
+    // Values missing is a setup gap, not a review failure: say which, and where they come from. The
+    // action is the same as for a review that did not complete.
+    if (aiReview.missing?.length) add(ai.notCompleted, aiValuesMissing(aiReview.missing));
+    else if (aiReview.error) add(ai.notCompleted, `The AI review did not complete (${aiReview.error})`);
     const fromAi = findings.filter((f) => f.tool === 'ai-review');
     const steering = fromAi.filter((f) => f.rule === 'reviewer-steering');
     if (steering.length) add(ai.reviewerSteering, 'Text in the change tries to steer the AI review');
@@ -65,6 +69,15 @@ export function decide({ policy, zone, files, checks, tools, findings, aiReview 
   const top = reasons.reduce((max, r) => Math.max(max, STRENGTH[r.action] ?? 1), 0);
   const verdict = top === 2 ? 'fail' : top === 1 ? 'needs-person' : 'pass';
   return { verdict, reasons };
+}
+
+/** The reason when the caller turned the AI review on without its values. */
+export function aiValuesMissing(missing) {
+  const one = missing.length === 1;
+  return (
+    `AI review is on, but ${one ? 'its value' : 'its values'} ${missing.join(', ')} ${one ? 'is' : 'are'} missing in .github/workflows/aifactory-gate.yml. ` +
+    "They come from the customer's page in the AI Factory Management App: set them with setup-repo.mjs --ai-review, or set ai-review: false until they are there"
+  );
 }
 
 /** Counts of findings per severity, for the summary and the verdict record. */

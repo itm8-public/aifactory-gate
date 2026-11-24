@@ -35,7 +35,10 @@ not let an author approve their own PR). So the unblock is done where it can be 
 - **AI review:** the solo caller template documents turning the review on only when itm8 has
   provisioned the identity and supplied the inputs (see [`ai-review-onboarding.md`](ai-review-onboarding.md)).
   Fully automating the managed-identity / OIDC / consent setup is **not** done here — it remains the
-  manual onboarding step, flagged for a later change.
+  manual onboarding step, flagged for a later change. *Update (0.4.0): done. The review identity lives
+  in itm8's tenant and is provisioned from the Management App after consent; `setup-repo.mjs
+  --ai-review` writes the values and refuses empty ones. See
+  [`ai-review-onboarding.md`](ai-review-onboarding.md).*
 
 The deliberate trade-off, accepted by the owner: on the solo profile, ordinary green-zone CI/infra
 changes are self-served by the customer with only automated assurance (scanners, tests, and the AI
@@ -138,6 +141,10 @@ Do **not** touch `policy.v1.json` for this. The deterministic engine should keep
 - Gate flipping the default on the identity being provisioned — never ship `ai-review: true` with
   empty endpoint/client-id, or every run signs in, fails, and returns `needs-person`
   ([`gate.yml:85-104`](../.github/workflows/gate.yml), `notCompleted` → `needs-person`).
+- *Update (0.4.0): the identity is not created in the customer's tenant; it lives in itm8's tenant
+  and the Management App provisions it. `setup-repo.mjs --ai-review` writes the inputs and refuses
+  empty ones, and the gate names missing values instead of trying to sign in. See
+  [`ai-review-onboarding.md`](ai-review-onboarding.md).*
 - **Recommendation: adopt, but sequence it after (i) and (iii).** The value is real, but it
   depends on the identity automation existing first.
 

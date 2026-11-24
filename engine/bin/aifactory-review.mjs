@@ -4,7 +4,8 @@
 //   aifactory-review verdict --repo DIR --out DIR --zone green|yellow|red --level 1|2|3 [--base REF]
 //                            [--check name=outcome ...] [--ai-review on|off] [--profile solo]
 //   aifactory-review run     (scan, then verdict; same options)
-// The AI review reads AIFACTORY_MODEL_ENDPOINT and AIFACTORY_MODEL_TOKEN (an Entra token).
+// The AI review reads AIFACTORY_MODEL_ENDPOINT and AIFACTORY_MODEL_TOKEN (an Entra token), and
+// AIFACTORY_AI_REVIEW_MISSING: the caller inputs gate.yml found empty (comma-separated).
 // Exit code: 0 when the verdict is pass or the level is advisory (1); 1 otherwise; 2 on a usage error.
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
@@ -78,6 +79,16 @@ function versions(policy) {
   return { engine: pkg.version, policy: policy.version, tools };
 }
 
+/**
+ * The AI review inputs the caller left empty: those gate.yml lists, plus the endpoint when the engine
+ * itself sees none. With any missing, the review is not tried and the verdict names them.
+ */
+export function missingAiValues(env) {
+  const listed = (env.AIFACTORY_AI_REVIEW_MISSING ?? '').split(/[\s,]+/).filter(Boolean);
+  if (!(env.AIFACTORY_MODEL_ENDPOINT ?? '').trim() && !listed.includes('review-endpoint')) listed.unshift('review-endpoint');
+  return listed;
+}
+
 async function aiReview(opts, models, complete) {
   try {
     const { findings, state } = await reviewWithModels({
@@ -111,7 +122,10 @@ async function main(argv) {
 
   let ai = { requested: false };
   let complete;
-  if (opts['ai-review'] === 'on') {
+  const missing = opts['ai-review'] === 'on' ? missingAiValues(process.env) : [];
+  if (missing.length) {
+    ai = { requested: true, findings: [], state: {}, missing, error: `AI review values missing: ${missing.join(', ')}` };
+  } else if (opts['ai-review'] === 'on') {
     try {
       complete = createModelClient({ endpoint: process.env.AIFACTORY_MODEL_ENDPOINT, token: process.env.AIFACTORY_MODEL_TOKEN });
       ai = await aiReview(opts, models, complete);

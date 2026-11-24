@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { repoReader, scannerRuleIds } from '../engine/bin/aifactory-review.mjs';
+import { fileURLToPath } from 'node:url';
+import { missingAiValues, repoReader, scannerRuleIds } from '../engine/bin/aifactory-review.mjs';
 import { createModelClient, validate } from '../engine/src/models/client.mjs';
 import { limitDiff, splitDiff } from '../engine/src/models/diff.mjs';
 import { checkEvidence } from '../engine/src/models/evidence.mjs';
@@ -162,6 +164,48 @@ test('policy: AI findings by zone, and only when requested', () => {
   assert.equal(decide({ ...base, findings: [ai({ rule: 'reviewer-steering', severity: 'low' })], aiReview: requested }).verdict, 'needs-person');
   assert.equal(decide({ ...base, aiReview: { requested: true, error: 'HTTP 503' } }).verdict, 'needs-person');
   assert.equal(decide({ ...base, findings: [ai()] }).verdict, 'pass', 'not requested: ignored');
+});
+
+test('policy: AI review on without its values names them and where they come from', () => {
+  const r = decide({ ...base, aiReview: { requested: true, error: 'AI review values missing: azure-client-id', missing: ['azure-client-id'] } });
+  assert.equal(r.verdict, 'needs-person', 'the same action as a review that did not complete');
+  assert.equal(r.reasons.length, 1);
+  assert.match(r.reasons[0].text, /^AI review is on, but its value azure-client-id is missing in \.github\/workflows\/aifactory-gate\.yml\./);
+  assert.match(r.reasons[0].text, /customer's page in the AI Factory Management App/);
+  assert.doesNotMatch(r.reasons[0].text, /did not complete/);
+  const all = decide({ ...base, aiReview: { requested: true, missing: ['review-endpoint', 'azure-client-id', 'azure-tenant-id'] } });
+  assert.match(all.reasons[0].text, /its values review-endpoint, azure-client-id, azure-tenant-id are missing/);
+  // A secret still fails: missing values never loosen a verdict.
+  const secret = { tool: 'gitleaks', rule: 'k', severity: 'high', file: 'a', line: 1, message: 'm' };
+  assert.equal(decide({ ...base, findings: [secret], aiReview: { requested: true, missing: ['review-endpoint'] } }).verdict, 'fail');
+});
+
+test('missingAiValues: the inputs gate.yml found empty, plus an endpoint the engine does not see', () => {
+  const endpoint = 'https://r.openai.azure.com';
+  assert.deepEqual(missingAiValues({ AIFACTORY_MODEL_ENDPOINT: endpoint }), []);
+  assert.deepEqual(missingAiValues({ AIFACTORY_MODEL_ENDPOINT: endpoint, AIFACTORY_AI_REVIEW_MISSING: '' }), []);
+  assert.deepEqual(missingAiValues({ AIFACTORY_MODEL_ENDPOINT: endpoint, AIFACTORY_AI_REVIEW_MISSING: 'azure-client-id,azure-tenant-id' }), ['azure-client-id', 'azure-tenant-id']);
+  assert.deepEqual(missingAiValues({ AIFACTORY_AI_REVIEW_MISSING: 'review-endpoint,azure-tenant-id' }), ['review-endpoint', 'azure-tenant-id']);
+  assert.deepEqual(missingAiValues({ AIFACTORY_MODEL_ENDPOINT: ' ' }), ['review-endpoint']);
+});
+
+test('engine run: AI review on with values missing gives the specific reason, without a model call', () => {
+  const out = mkdtempSync(path.join(tmpdir(), 'gate-'));
+  for (const [f, c] of [['gitleaks.json', '[]'], ['opengrep.sarif', '{"runs":[]}'], ['osv.json', '{"results":[]}']]) writeFileSync(path.join(out, f), c);
+  const repo = fileURLToPath(new URL('..', import.meta.url));
+  const r = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('../engine/bin/aifactory-review.mjs', import.meta.url)), 'verdict', '--repo', repo, '--out', out, '--zone', 'green', '--level', '2', '--base', 'HEAD', '--check', 'tests=success', '--ai-review', 'on'],
+    { encoding: 'utf8', env: { ...process.env, AIFACTORY_MODEL_ENDPOINT: '', AIFACTORY_MODEL_TOKEN: '', AIFACTORY_AI_REVIEW_MISSING: 'review-endpoint,azure-client-id,azure-tenant-id' } },
+  );
+  assert.equal(r.status, 1, r.stderr);
+  const record = JSON.parse(readFileSync(path.join(out, 'verdict.json'), 'utf8'));
+  assert.equal(record.verdict, 'needs-person');
+  assert.deepEqual(record.aiReview.missing, ['review-endpoint', 'azure-client-id', 'azure-tenant-id']);
+  assert.deepEqual(record.reasons.map((x) => x.action), ['needs-person']);
+  const md = readFileSync(path.join(out, 'summary.md'), 'utf8');
+  assert.match(md, /\*\*Needs a person: AI review is on, but its values review-endpoint, azure-client-id, azure-tenant-id are missing/);
+  assert.doesNotMatch(md, /did not complete|In plain words/);
 });
 
 test('policy: AI findings never loosen a failed fact', () => {
