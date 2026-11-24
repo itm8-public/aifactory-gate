@@ -30,7 +30,7 @@ on:
         type: string
         default: '.'
       ai-review:
-        description: Run the AI review (find, verify, explain) on itm8's review Foundry. Needs the three inputs below and the customer's consent.
+        description: Run the AI review (find, verify, explain) on itm8's review Foundry. Needs the three inputs below, from the customer's page in the AI Factory Management App, where the customer's consent is recorded.
         type: boolean
         default: false
       review-endpoint:
@@ -38,10 +38,11 @@ on:
         type: string
         default: ''
       azure-client-id:
-        description: Client id of the customer's managed identity for the review Foundry (no secret; GitHub OIDC).
+        description: Client id of the customer's review identity in itm8's tenant (no secret; GitHub OIDC).
         type: string
         default: ''
       azure-tenant-id:
+        description: itm8's tenant id, where the review identity lives.
         type: string
         default: ''
       review-token-scope:
@@ -84,11 +85,32 @@ jobs:
           TEST_COMMAND: ${{ inputs.test-command }}
         run: bash -eo pipefail -c "$TEST_COMMAND"
 
+      # AI review on but a value it needs left empty: no sign-in is tried (it could only fail with a
+      # generic error). The engine names the missing values instead, and the policy decides as for
+      # a review that did not complete (needs-person).
+      - name: AI review values
+        id: ai
+        if: ${{ inputs.ai-review }}
+        env:
+          ENDPOINT: ${{ inputs.review-endpoint }}
+          CLIENT_ID: ${{ inputs.azure-client-id }}
+          TENANT_ID: ${{ inputs.azure-tenant-id }}
+        run: |
+          missing=()
+          [ -n "${ENDPOINT//[[:space:]]/}" ] || missing+=(review-endpoint)
+          [ -n "${CLIENT_ID//[[:space:]]/}" ] || missing+=(azure-client-id)
+          [ -n "${TENANT_ID//[[:space:]]/}" ] || missing+=(azure-tenant-id)
+          if [ ${#missing[@]} -gt 0 ]; then
+            list=$(IFS=,; echo "${missing[*]}")
+            echo "missing=$list" >> "$GITHUB_OUTPUT"
+            echo "::warning title=aifactory gate::AI review is on, but its values are missing: ${list//,/, }. They come from the customer's page in the AI Factory Management App."
+          fi
+
       # A failed sign-in does not stop the gate: the engine then records that the AI review did not
       # complete, which the policy turns into needs-person.
       - name: Sign in to the review Foundry
         id: azure
-        if: ${{ inputs.ai-review }}
+        if: ${{ inputs.ai-review && steps.ai.outputs.missing == '' }}
         continue-on-error: true
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
@@ -118,10 +140,11 @@ jobs:
           AI_REVIEW: ${{ inputs.ai-review && 'on' || 'off' }}
           AIFACTORY_MODEL_ENDPOINT: ${{ inputs.review-endpoint }}
           AIFACTORY_MODEL_TOKEN: ${{ steps.token.outputs.token }}
+          AIFACTORY_AI_REVIEW_MISSING: ${{ steps.ai.outputs.missing }}
         run: |
           mkdir -p "$RUNNER_TEMP/gate" && chmod 0777 "$RUNNER_TEMP/gate"
           docker run --rm \
-            -e AIFACTORY_MODEL_ENDPOINT -e AIFACTORY_MODEL_TOKEN \
+            -e AIFACTORY_MODEL_ENDPOINT -e AIFACTORY_MODEL_TOKEN -e AIFACTORY_AI_REVIEW_MISSING \
             -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/gate:/out" \
             "$GATE_IMAGE" run --repo /repo --out /out --zone "$ZONE" --level "$LEVEL" --base HEAD^1 \
             --check "tests=$TESTS" --ai-review "$AI_REVIEW" --profile "$PROFILE"

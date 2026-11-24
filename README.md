@@ -17,7 +17,7 @@ Status: 0.1.0. Facts (tests, secrets, code security, dependencies) are live-test
 
 ## AI review (off by default)
 
-When the caller sets `ai-review: true`, the gate signs in to itm8's review Foundry with GitHub OIDC (no stored secret) and runs, after the scanners:
+When the caller sets `ai-review: true`, the gate signs in to itm8's review Foundry with GitHub OIDC (no stored secret) and runs, after the scanners. The review identity lives in itm8's tenant, and its values come from the customer's page in the AI Factory Management App once the customer's consent is recorded there. `setup-repo.mjs --ai-review` writes them; see [`docs/ai-review-onboarding.md`](docs/ai-review-onboarding.md). If `ai-review` is true but a value is empty, the gate does not try to sign in. The verdict is `needs-person` with the names of the missing values.
 
 | Step              | Who                      | What                                                                                              |
 | ----------------- | ------------------------ | ------------------------------------------------------------------------------------------------- |
@@ -89,6 +89,18 @@ fails (and only the itm8 team / repo admin can bypass) for the serious cases abo
 repository set up without `--profile solo` keeps the standard, code-owner-reviewed behaviour. See
 [`docs/solo-developer-redesign.md`](docs/solo-developer-redesign.md) for the trust model and the
 security rationale.
+
+### Turning on the AI review
+
+After the customer's consent is recorded, their page in the AI Factory Management App shows the values and the command. The command opens a pull request in the repository that sets the AI review lines of the caller. It is a dry run until `--apply`, and it refuses empty or malformed values:
+
+```bash
+node scripts/setup-repo.mjs --repo OWNER/NAME --ai-review --review-endpoint https://NAME.openai.azure.com \
+  --azure-client-id GUID --azure-tenant-id GUID [--review-token-scope https://ai.azure.com/.default] --apply
+node scripts/setup-repo.mjs --repo OWNER/NAME --print-oidc   # the OIDC subject prefix for the review identity
+```
+
+See [`docs/ai-review-onboarding.md`](docs/ai-review-onboarding.md).
 
 ## Develop
 

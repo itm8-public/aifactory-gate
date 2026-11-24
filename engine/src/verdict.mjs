@@ -46,7 +46,7 @@ export function readResults(results) {
 
 /**
  * Applies the policy and writes verdict.json and summary.md.
- * `ai` is the AI review's outcome when it was requested: { requested, findings, state, error }.
+ * `ai` is the AI review's outcome when it was requested: { requested, findings, state, error, missing }.
  * `explain` (optional) turns the record into plain words; its failure only drops the explanation.
  */
 export async function buildVerdict({ repo, results, zone, level, base, checks, policy, versions, files, ai = { requested: false }, explain }) {
@@ -56,7 +56,7 @@ export async function buildVerdict({ repo, results, zone, level, base, checks, p
   const scanned = readResults(results).findings.map((f) => (f.file.startsWith(prefix) ? { ...f, file: f.file.slice(prefix.length) } : f));
   const findings = [...scanned, ...(ai.findings ?? [])];
   const changed = files !== undefined ? files : changedFiles(repo, base);
-  const aiReview = { requested: ai.requested, error: ai.error };
+  const aiReview = { requested: ai.requested, error: ai.error, missing: ai.missing };
   const { verdict, reasons } = decide({ policy, zone, files: changed, checks, tools, findings, aiReview });
   const record = {
     verdict,
@@ -67,7 +67,7 @@ export async function buildVerdict({ repo, results, zone, level, base, checks, p
     counts: countBySeverity(findings),
     tools,
     checks,
-    aiReview: ai.requested ? { ...ai.state, error: ai.error ?? null } : { requested: false },
+    aiReview: ai.requested ? { ...ai.state, error: ai.error ?? null, ...(ai.missing?.length ? { missing: ai.missing } : {}) } : { requested: false },
     changedFiles: changed === null ? null : changed.length,
     findings,
     versions,
