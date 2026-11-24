@@ -1,0 +1,49 @@
+# Dependabot version updates for the gate repository (itm8-public/aifactory-gate, the canonical copy).
+#
+# - Weekly, one grouped pull request per ecosystem, at most two open at a time.
+# - cooldown: a new release waits 7 days before it is proposed. GitHub documents that the cooldown
+#   applies to version updates only; Dependabot security updates are never delayed by it.
+# - github-actions: Dependabot keeps the commit SHA pins and rewrites the version comment after them.
+# - A merge to main reaches customers only when a release moves the v0-next and v0 tags
+#   (customers call gate.yml@v0), so a bump of an action used by the gate is read before it ships.
+#
+# Not covered (Dependabot cannot see them here):
+# - image/Dockerfile takes its base image and the three scanner versions from ARG values that
+#   scripts/build-image.mjs fills from pins.json (base image digest, gitleaks, opengrep, osv-scanner
+#   with their sha256). `FROM ${PIN_BASE_IMAGE}` has no literal image, so there is no docker entry.
+#   The pins are moved by hand, at least 14 days after a release.
+# - The engine image reference in gate.yml (`GATE_IMAGE`, an env value, not a `uses:`) is written
+#   by `scripts/release.mjs pin` on a maintainer's release commit; the caller template's
+#   `gate.yml@v0` is a tag channel on purpose.
+# - The opengrep rule pack (rules/), model names and versions, plugin or MCP references.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 2
+
+  # The root package.json has no dependencies today (the engine uses Node built-ins only); this
+  # entry picks one up if it ever gets one.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
+    open-pull-requests-limit: 2
