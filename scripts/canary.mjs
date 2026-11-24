@@ -129,7 +129,16 @@ function realDownload(gh, runId) {
 /** Runs the canary. `gh`, the clock and the writers are injectable for tests. Returns the exit code. */
 export function run(
   argv,
-  { gh = realGh, out = console.log, sleep = sleepSync, now = () => Date.now(), download, timeoutMs = 30 * 60 * 1000, pollMs = 15 * 1000 } = {},
+  {
+    gh = realGh,
+    out = console.log,
+    sleep = sleepSync,
+    now = () => Date.now(),
+    download,
+    timeoutMs = 30 * 60 * 1000,
+    pollMs = 15 * 1000,
+    nudgeMs = 5 * 60 * 1000,
+  } = {},
 ) {
   const opts = parseArgs(argv);
   const api = (p) => JSON.parse(gh(['api', p]));
@@ -166,13 +175,15 @@ export function run(
   }
 
   // An empty commit on each branch: same tree, so the change under review stays the case's change.
-  for (const c of cases) {
+  const push = (c) => {
     const head = api(`repos/${CANARY_REPO}/git/ref/heads/${enc(c.kase.branch)}`).object.sha;
     const tree = api(`repos/${CANARY_REPO}/git/commits/${head}`).tree.sha;
     const message = `canary: ${GATE_REPO}@${CHANNEL} (${sha.slice(0, 7)}, engine ${engine})`;
     c.sha = send('POST', `repos/${CANARY_REPO}/git/commits`, { message, tree, parents: [head] }).sha;
     send('PATCH', `repos/${CANARY_REPO}/git/refs/heads/${enc(c.kase.branch)}`, { sha: c.sha, force: false });
-  }
+    c.pushedAt = now();
+  };
+  for (const c of cases) push(c);
   out(`Pushed an empty commit to ${cases.length} case branch(es) in ${CANARY_REPO}; waiting for the runs.`);
 
   const deadline = now() + timeoutMs;
@@ -181,6 +192,14 @@ export function run(
     for (const c of waiting) {
       const r = latestRun(api(`repos/${CANARY_REPO}/actions/runs?head_sha=${c.sha}&per_page=20`).workflow_runs ?? []);
       if (r?.status === 'completed') c.run = api(`repos/${CANARY_REPO}/actions/runs/${r.id}`);
+      // GitHub can take a few minutes to start a run for a pushed commit (almost two were seen on
+      // the first live run) and can miss one. Without a run after nudgeMs, push once more for
+      // that case rather than wait out the timeout.
+      else if (!r && !c.nudged && now() - c.pushedAt >= nudgeMs) {
+        out(`${c.kase.branch}: no run started within ${Math.round(nudgeMs / 60000)} minutes; pushing another empty commit.`);
+        push(c);
+        c.nudged = true;
+      }
     }
     waiting = waiting.filter((c) => !c.run);
     if (!waiting.length) break;

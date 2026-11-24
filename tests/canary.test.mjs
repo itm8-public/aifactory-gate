@@ -98,21 +98,26 @@ test('options', () => {
 });
 
 /** A fake GitHub: the canary repository's branches, runs and verdicts, and the gate's tag. */
-function fakeGitHub({ verdicts = {}, variable = false, movesTag = false, pinned = true } = {}) {
+function fakeGitHub({ verdicts = {}, variable = false, movesTag = false, pinned = true, lostOnce } = {}) {
   const calls = [];
   let tagReads = 0;
   const image = pinned ? `ghcr.io/itm8-public/aifactory-review@sha256:${'a'.repeat(64)}` : 'ghcr.io/itm8-public/aifactory-review:0.1.0';
   const b64 = (s) => Buffer.from(s).toString('base64');
   const live = CASES.filter((c) => variable || !c.needsVariable);
   const byRun = new Map(live.map((c, i) => [i + 1, c]));
-  const runFor = (sha) => [...byRun].find(([, c]) => sha === `new-${c.branch}`)?.[0];
+  const heads = new Map(CASES.map((c) => [c.branch, `head-${c.branch}`]));
+  // `lostOnce`: GitHub starts no run for the first commit pushed to that branch.
+  const lost = (c, sha) => c.branch === lostOnce && sha === `head-${c.branch}+`;
+  const runFor = (sha) => [...byRun].find(([, c]) => heads.get(c.branch) === sha && !lost(c, sha))?.[0];
   const gh = (args, input) => {
     calls.push({ args, body: input ? JSON.parse(input) : undefined });
     const [, ...rest] = args;
     if (args[0] === 'api' && rest[0] === '--method') {
       const [, method, p] = rest;
       const body = JSON.parse(input);
-      if (method === 'POST' && p.endsWith('/git/commits')) return JSON.stringify({ sha: body.parents[0].replace('head-', 'new-') });
+      if (method === 'POST' && p.endsWith('/git/commits')) return JSON.stringify({ sha: `${body.parents[0]}+` });
+      const ref = p.match(/git\/refs\/heads\/(.+)$/);
+      if (method === 'PATCH' && ref) heads.set(decodeURIComponent(ref[1]), body.sha);
       return '{}';
     }
     const p = rest[0];
@@ -128,7 +133,7 @@ function fakeGitHub({ verdicts = {}, variable = false, movesTag = false, pinned 
     }
     let m;
     if ((m = p.match(/pulls\?state=open&head=itm8-public:(.+)$/))) return JSON.stringify([{ html_url: `https://github.com/${CANARY_REPO}/pull/${m[1]}` }]);
-    if ((m = p.match(/git\/ref\/heads\/(.+)$/))) return JSON.stringify({ object: { sha: `head-${decodeURIComponent(m[1])}` } });
+    if ((m = p.match(/git\/ref\/heads\/(.+)$/))) return JSON.stringify({ object: { sha: heads.get(decodeURIComponent(m[1])) } });
     if (p.includes('/git/commits/')) return JSON.stringify({ tree: { sha: 'tree' } });
     if ((m = p.match(/actions\/runs\?head_sha=([^&]+)/))) {
       const id = runFor(m[1]);
@@ -206,4 +211,16 @@ test('runs that never finish are a mismatch after the timeout', () => {
   const code = run([], { gh, download: fake.download, out: () => {}, sleep: (ms) => (t += ms), now: () => t, timeoutMs: 60000, pollMs: 15000 });
   assert.equal(code, 1);
   assert.equal(fake.writes().at(-1).body.state, 'failure');
+});
+
+test('a case whose push starts no run gets one more empty commit, then is judged as usual', () => {
+  const fake = fakeGitHub({ lostOnce: 'canary/secret' });
+  const lines = [];
+  let t = 0;
+  const code = run([], { ...fake, out: (l) => lines.push(l), sleep: (ms) => (t += ms), now: () => t, pollMs: 15000, nudgeMs: 60000 });
+  assert.equal(code, 0);
+  const pushes = fake.writes().filter((w) => w.args[2] === 'PATCH').map((w) => w.args[3]);
+  assert.equal(pushes.filter((p) => p.endsWith('canary/secret')).length, 2);
+  assert.equal(pushes.filter((p) => p.endsWith('canary/pass')).length, 1);
+  assert.match(lines.join('\n'), /canary\/secret: no run started within 1 minutes; pushing another empty commit/);
 });

@@ -138,7 +138,7 @@ The canary repository holds synthetic content only. Each case is a branch with o
 | `canary/ai-values-missing` | A clean change, AI review on, values empty  | `needs-person`: the AI review values are missing                 |
 | `canary/ai-review`         | A clean change, AI review fully on          | `pass` with "In plain words"; skipped until the canary's review identity values are set as its repository variables |
 
-`scripts/canary.mjs` pushes an empty commit to each branch, because a push by a person starts the workflow and one made with the workflow token would not. Then it waits for the runs and checks four things for each case:
+`scripts/canary.mjs` pushes an empty commit to each branch, because a push by a person starts the workflow and one made with the workflow token would not. If GitHub starts no run for a branch within five minutes, it pushes once more. Then it waits for the runs (up to 30 minutes) and checks four things for each case:
 
 - the run used `gate.yml` at the commit `@v0-next` points at, and that commit pins an image digest;
 - the `gate / verdict` check passed only for a `pass`;
