@@ -166,7 +166,7 @@ function fixIt(record, groups) {
     const prompt = [
       `The itm8 AI Factory gate checked my pull request and returned "${record.verdict}". Help me change it so the gate can pass:`,
       ...asks.map((a) => `- ${a.replace(/\n/g, '\n  ')}`),
-      'Rules: do not change .github/workflows/aifactory-gate.yml, CODEOWNERS or the gate settings to get past the gate. Never put a secret in the code or in this chat. Keep the change small and explain it to me in plain words. Then run the tests and push to the same branch.',
+      'Rules: never weaken or switch off the gate. .github/workflows/aifactory-gate.yml, CODEOWNERS and the gate settings stay as they are on main. Never put a secret in the code or in this chat. Keep the change small and explain it to me in plain words. Then run the tests and push to the same branch.',
     ].join('\n');
     lines.push(
       '<details><summary>Prompt for your AI tool (Claude, GitHub Copilot, Lovable, Cursor) or for a person</summary>',

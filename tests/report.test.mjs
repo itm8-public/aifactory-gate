@@ -38,7 +38,7 @@ test('needs-person on an organization repository: itm8 acts; the contributor can
   const prompt = promptOf(md);
   assert.match(prompt, /returned "needs-person"/);
   assert.match(prompt, /Ask me whether those changes were meant\. If not, undo them\. If they were, leave them as they are: a person at itm8 reviews them\. Do not rename or move files to avoid that\./);
-  assert.match(prompt, /do not change \.github\/workflows\/aifactory-gate\.yml, CODEOWNERS or the gate settings to get past the gate\. Never put a secret in the code or in this chat\./);
+  assert.match(prompt, /never weaken or switch off the gate\. \.github\/workflows\/aifactory-gate\.yml, CODEOWNERS and the gate settings stay as they are on main\. Never put a secret in the code or in this chat\./);
   assert.match(md, /Prompt for your AI tool \(Claude, GitHub Copilot, Lovable, Cursor\) or for a person/);
 });
 
