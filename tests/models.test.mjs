@@ -80,7 +80,10 @@ test('client: refuses bad endpoints and bad answers', async () => {
   const req = { deployment: 'd', system: 's', user: 'u', schema: FIND_SCHEMA, schemaName: 'f' };
   await assert.rejects(createModelClient({ endpoint: 'https://x.example', token: 't', fetchImpl: answer('nope') })(req), /not JSON/);
   await assert.rejects(createModelClient({ endpoint: 'https://x.example', token: 't', fetchImpl: answer('{"x":1}') })(req), /findings is missing/);
-  await assert.rejects(createModelClient({ endpoint: 'https://x.example', token: 't', fetchImpl: answer('', false, 429) })(req), /HTTP 429/);
+  await assert.rejects(createModelClient({ endpoint: 'https://x.example', token: 't', fetchImpl: answer('', false, 429) })(req), /HTTP 429$/);
+  // The service's error code is kept (it tells a content filter from an outage); its message is not.
+  const refused = async () => ({ ok: false, status: 400, json: async () => ({ error: { code: 'content_filter', message: 'quoted <change> text' } }) });
+  await assert.rejects(createModelClient({ endpoint: 'https://x.example', token: 't', fetchImpl: refused })(req), (err) => err.message === 'd: HTTP 400 (content_filter)');
 });
 
 test('validate: enum, integer, maxItems', () => {
