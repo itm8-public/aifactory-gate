@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "itm8-aifactory-code": {
+      "source": {
+        "source": "github",
+        "repo": "itm8-public/aifactory-code"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "aifactory-code@itm8-aifactory-code": true
+  }
+}

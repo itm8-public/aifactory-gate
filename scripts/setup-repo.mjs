@@ -1,8 +1,11 @@
 // Sets up a customer repository for the gate at responsibility level 2: a ruleset on the default
-// branch and the dev and prod environments. With --ai-review it also turns the AI review on in the
-// repository's caller workflow. Dry run by default: it prints every GitHub API call.
+// branch and the dev and prod environments, and one pull request that makes every AI coding tool
+// follow the same rules (AGENTS.md and thin adapters for Claude and GitHub Copilot). With --ai-review
+// it also turns the AI review on in the repository's caller workflow. Dry run by default: it prints
+// every GitHub API call.
 //
-//   node scripts/setup-repo.mjs --repo OWNER/NAME [--team SLUG | --reviewer LOGIN] [--profile solo] [--apply]
+//   node scripts/setup-repo.mjs --repo OWNER/NAME [--team SLUG | --reviewer LOGIN] [--profile solo] [--tools claude,copilot] [--apply]
+//   node scripts/setup-repo.mjs --repo OWNER/NAME --tools claude,copilot [--apply]
 //   node scripts/setup-repo.mjs --repo OWNER/NAME [--team SLUG | --reviewer LOGIN] --ai-review
 //        --review-endpoint URL --azure-client-id GUID --azure-tenant-id GUID [--review-token-scope SCOPE] [--apply]
 //   node scripts/setup-repo.mjs --repo OWNER/NAME --print-oidc
@@ -25,13 +28,22 @@
 //             is then enough).
 // --review-token-scope  defaults to https://cognitiveservices.azure.com/.default (an account
 //             endpoint); a Foundry project endpoint (…/api/projects/NAME) needs https://ai.azure.com/.default.
+// --tools     which AI tool adapters to add next to AGENTS.md, which is always added: 'claude'
+//             (.claude/settings.json with the itm8 plugin, and a CLAUDE.md that imports AGENTS.md),
+//             'copilot' (.github/copilot-instructions.md), both (the default) or 'none' (AGENTS.md
+//             only). Lovable and Cursor need no file. Part of every run with --team or --reviewer;
+//             given alone it adds only these files. It opens one pull request on the branch
+//             aifactory/ai-tools and never overwrites a file that is already there: .claude/settings.json
+//             is merged, every other existing file is kept, and the output says what was kept.
 // --print-oidc prints the repository's GitHub OIDC subject prefix, which the review identity's
 //             federated credentials are written for. It only reads.
 // Needs the GitHub CLI signed in: admin rights on the repository for the ruleset and environments;
-// write access and the token's workflow scope for --ai-review.
+// write access and the token's workflow scope for --ai-review; write access for --tools.
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 export const RULESET_NAME = 'aifactory gate';
 export const REQUIRED_CHECK = 'gate / verdict';
@@ -39,10 +51,17 @@ export const CALLER_PATH = '.github/workflows/aifactory-gate.yml';
 export const AI_REVIEW_BRANCH = 'aifactory/ai-review';
 export const DEFAULT_TOKEN_SCOPE = 'https://cognitiveservices.azure.com/.default';
 export const PROJECT_TOKEN_SCOPE = 'https://ai.azure.com/.default';
+export const TOOLS_BRANCH = 'aifactory/ai-tools';
+export const TOOL_NAMES = ['claude', 'copilot'];
+export const AGENTS_PATH = 'AGENTS.md';
+export const CLAUDE_MD_PATH = 'CLAUDE.md';
+export const CLAUDE_MD_ALT_PATH = '.claude/CLAUDE.md';
+export const CLAUDE_SETTINGS_PATH = '.claude/settings.json';
+export const COPILOT_PATH = '.github/copilot-instructions.md';
 const GITHUB_ACTIONS_APP_ID = 15368;
 const REPOSITORY_ADMIN_ROLE_ID = 5;
 
-const VALUE_OPTIONS = ['--repo', '--team', '--reviewer', '--profile'];
+const VALUE_OPTIONS = ['--repo', '--team', '--reviewer', '--profile', '--tools'];
 const AI_OPTIONS = ['--review-endpoint', '--azure-client-id', '--azure-tenant-id', '--review-token-scope'];
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SCOPE = /^https:\/\/[a-z0-9.-]+(\/[\w.-]+)*\/\.default$/i;
@@ -69,6 +88,7 @@ export function parseArgs(argv) {
     if (Object.keys(opts).length > 3 || opts.apply || Object.keys(ai).length) throw new Error('--print-oidc only reads: give it with --repo and nothing else');
     return opts;
   }
+  if (opts.tools !== undefined) opts.tools = parseTools(opts.tools);
   if (opts.profile && opts.profile !== 'solo') throw new Error("--profile, when given, must be 'solo'");
   if (opts.aiReview) {
     if (opts.team && opts.reviewer) throw new Error('give at most one of --team or --reviewer');
@@ -77,8 +97,24 @@ export function parseArgs(argv) {
     return opts;
   }
   if (Object.keys(ai).length) throw new Error(`${Object.keys(ai).map((k) => `--${k}`).join(', ')} only go with --ai-review`);
-  if (!opts.team === !opts.reviewer) throw new Error('give exactly one of --team or --reviewer');
+  if (opts.team && opts.reviewer) throw new Error('give exactly one of --team or --reviewer');
+  if (!opts.team && !opts.reviewer) {
+    if (!opts.tools) throw new Error('give exactly one of --team or --reviewer (or --tools alone, to add only the AI tool files)');
+    if (opts.profile) throw new Error('--profile sets up the ruleset, so it needs --team or --reviewer');
+  }
   return opts;
+}
+
+/** `--tools claude,copilot`: the adapters to add. 'none' means AGENTS.md only. */
+export function parseTools(value) {
+  const names = String(value).split(',').map((n) => n.trim().toLowerCase()).filter(Boolean);
+  const unknown = names.filter((n) => n !== 'none' && !TOOL_NAMES.includes(n));
+  if (!names.length || unknown.length || (names.includes('none') && names.length > 1)) {
+    throw new Error(
+      `--tools takes ${TOOL_NAMES.join(', ')} (separated by commas) or none; got "${value}". Lovable and Cursor need no adapter. Nothing was changed.`,
+    );
+  }
+  return TOOL_NAMES.filter((n) => names.includes(n));
 }
 
 /**
@@ -316,6 +352,141 @@ export function aiReviewCalls({ repo, defaultBranch, baseSha, branchExists, file
   ];
 }
 
+const TEMPLATE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'templates', 'ai-tools');
+const readTemplate = (name) => readFileSync(path.join(TEMPLATE_DIR, name), 'utf8');
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Adds the itm8 marketplace and plugin to an existing .claude/settings.json (already parsed) and
+ * changes nothing else. A key that is already there is never changed: when it holds another value it
+ * is reported as kept. Returns { settings, added, kept }; throws when the file is not a shape it can
+ * merge into.
+ */
+export function mergeClaudeSettings(current, wanted = JSON.parse(readTemplate('claude-settings.template.json'))) {
+  if (!isObject(current)) throw new Error('its top level is not a JSON object');
+  const settings = structuredClone(current);
+  const added = [];
+  const kept = [];
+  for (const [section, entries] of Object.entries(wanted)) {
+    if (settings[section] === undefined) settings[section] = {};
+    else if (!isObject(settings[section])) throw new Error(`"${section}" in it is not a JSON object`);
+    for (const [key, value] of Object.entries(entries)) {
+      if (!(key in settings[section])) {
+        settings[section][key] = value;
+        added.push(`${section}.${key}`);
+      } else if (!isDeepStrictEqual(settings[section][key], value)) {
+        kept.push(`${section}.${key} is set differently there, so it was left as it is`);
+      }
+    }
+  }
+  return { settings, added, kept };
+}
+
+const importsAgents = (text) => /(^|\s)@AGENTS\.md\b/.test(text);
+const mentionsAgents = (text) => /AGENTS\.md/.test(text);
+
+/**
+ * What the AI tool pull request adds, and what it keeps. `tools` is a list of 'claude' and 'copilot'
+ * (AGENTS.md is always part of it). `existing` maps a path to { text, sha } for each file that is
+ * already on the default branch. Nothing that exists is overwritten: .claude/settings.json is merged,
+ * every other file is kept. Returns { files: [{ path, what, content, sha? }], kept: [{ path, why }] }.
+ */
+export function toolFilesPlan({ tools, existing }) {
+  const files = [];
+  const kept = [];
+  const add = (p, what, content, sha) => files.push({ path: p, what, content, ...(sha ? { sha } : {}) });
+
+  if (existing[AGENTS_PATH]) kept.push({ path: AGENTS_PATH, why: 'already there, so the shared instructions were not changed' });
+  else add(AGENTS_PATH, 'the instructions every AI tool follows, in plain words', readTemplate('AGENTS.template.md'));
+
+  if (tools.includes('claude')) {
+    const settings = existing[CLAUDE_SETTINGS_PATH];
+    const what = 'turns on the itm8 AI Factory plugin for Claude Code';
+    if (!settings) add(CLAUDE_SETTINGS_PATH, what, readTemplate('claude-settings.template.json'));
+    else {
+      let merged;
+      try {
+        merged = mergeClaudeSettings(JSON.parse(settings.text.replace(/^﻿/, '')));
+      } catch (err) {
+        const reason = err instanceof SyntaxError ? 'is not valid JSON' : err.message;
+        kept.push({
+          path: CLAUDE_SETTINGS_PATH,
+          why: `${reason}, so it was left as it is. Add the "extraKnownMarketplaces" and "enabledPlugins" entries from templates/ai-tools/claude-settings.template.json by hand`,
+        });
+      }
+      if (merged) {
+        if (merged.added.length) {
+          const json = `${JSON.stringify(merged.settings, null, 2)}\n`;
+          add(CLAUDE_SETTINGS_PATH, `${what} (merged into the existing file: ${merged.added.join(', ')} added, everything else unchanged)`, settings.text.includes('\r\n') ? json.replace(/\n/g, '\r\n') : json, settings.sha);
+        }
+        for (const why of merged.kept) kept.push({ path: CLAUDE_SETTINGS_PATH, why });
+        if (!merged.added.length && !merged.kept.length) kept.push({ path: CLAUDE_SETTINGS_PATH, why: 'already has the itm8 plugin' });
+      }
+    }
+
+    const claudeMdPath = [CLAUDE_MD_PATH, CLAUDE_MD_ALT_PATH].find((p) => existing[p]);
+    if (!claudeMdPath) add(CLAUDE_MD_PATH, 'makes Claude Code read AGENTS.md (Claude Code does not read it by itself when a CLAUDE.md exists)', readTemplate('CLAUDE.template.md'));
+    else {
+      kept.push({
+        path: claudeMdPath,
+        why: importsAgents(existing[claudeMdPath].text)
+          ? 'already there and already imports @AGENTS.md'
+          : 'already there, so it was not changed. It does not import AGENTS.md: add the line "@AGENTS.md" at its top, or Claude Code will not see the shared instructions',
+      });
+    }
+  }
+
+  if (tools.includes('copilot')) {
+    if (existing[COPILOT_PATH]) {
+      kept.push({
+        path: COPILOT_PATH,
+        why: `already there, so it was not changed${mentionsAgents(existing[COPILOT_PATH].text) ? ' (it already points to AGENTS.md)' : '; GitHub Copilot also reads AGENTS.md by itself'}`,
+      });
+    } else add(COPILOT_PATH, 'points GitHub Copilot to AGENTS.md', readTemplate('copilot-instructions.template.md'));
+  }
+  return { files, kept };
+}
+
+/** The writes of the AI tool pull request: a branch from the default branch, each file, a pull request. */
+export function toolFilesCalls({ repo, defaultBranch, baseSha, branchExists, files, kept }) {
+  const list = (items) => items.map((i) => `- \`${i.path}\`: ${i.what ?? i.why}`);
+  const underGithub = files.some((f) => f.path.startsWith('.github/'));
+  const body = [
+    'Makes every AI tool used in this repository follow the same rules, so Claude, GitHub Copilot, Lovable, Cursor and others can be used side by side. The gate does not change: it runs on GitHub, whichever tool wrote the change.',
+    '',
+    'Added:',
+    ...list(files),
+    ...(kept.length ? ['', 'Already there, kept as they are:', ...list(kept)] : []),
+    ...(underGithub ? ['', 'This pull request touches `.github/`, which the gate asks a person at itm8 to look at. That is expected.'] : []),
+    '',
+    'Written by `setup-repo.mjs`.',
+  ].join('\n');
+  return [
+    branchExists
+      ? { method: 'PATCH', path: `repos/${repo}/git/refs/heads/${TOOLS_BRANCH}`, body: { sha: baseSha, force: true }, why: `Reset the branch ${TOOLS_BRANCH} to ${defaultBranch}` }
+      : { method: 'POST', path: `repos/${repo}/git/refs`, body: { ref: `refs/heads/${TOOLS_BRANCH}`, sha: baseSha }, why: `Branch ${TOOLS_BRANCH} from ${defaultBranch}` },
+    ...files.map((f) => ({
+      method: 'PUT',
+      path: `repos/${repo}/contents/${f.path}`,
+      body: {
+        message: `${f.sha ? 'chore: update' : 'docs: add'} ${f.path} for AI tools`,
+        content: Buffer.from(f.content, 'utf8').toString('base64'),
+        branch: TOOLS_BRANCH,
+        ...(f.sha ? { sha: f.sha } : {}),
+      },
+      show: f.content,
+      why: `${f.sha ? 'Update' : 'Add'} ${f.path}: ${f.what}`,
+    })),
+    {
+      method: 'POST',
+      path: `repos/${repo}/pulls`,
+      body: { title: 'Add the same instructions for every AI tool', head: TOOLS_BRANCH, base: defaultBranch, body },
+      why: 'Open the pull request',
+      tolerate: 'a pull request already exists',
+    },
+  ];
+}
+
 /**
  * The repository's OIDC subject prefix, from GET repos/{repo}/actions/oidc/customization/sub and the
  * repository's full name (subjects are case-sensitive, so the name comes from GitHub, not the command).
@@ -387,8 +558,28 @@ export function run(argv, { gh = realGh, out = console.log, err = console.error 
     calls.push(...plan({ repo: opts.repo, reviewer, existingRulesetId: existing?.id, profile: opts.profile }));
   }
 
+  let repoInfo;
+  const defaultBranchOf = () => (repoInfo ??= api(`repos/${opts.repo}`)).default_branch;
+  const baseShaOf = (defaultBranch) => {
+    try {
+      return api(`repos/${opts.repo}/git/ref/heads/${defaultBranch.split('/').map(encodeURIComponent).join('/')}`).object.sha;
+    } catch (e) {
+      if (notFound(e)) throw new Error(`${opts.repo} has no commits on ${defaultBranch} yet. Make a first commit there, then run this again. Nothing was changed.`);
+      throw e;
+    }
+  };
+  const branchExistsOn = (branch) => {
+    try {
+      api(`repos/${opts.repo}/git/ref/heads/${branch}`);
+      return true;
+    } catch (e) {
+      if (!notFound(e)) throw e;
+      return false;
+    }
+  };
+
   if (opts.aiReview) {
-    const defaultBranch = api(`repos/${opts.repo}`).default_branch;
+    const defaultBranch = defaultBranchOf();
     let file;
     try {
       file = api(`repos/${opts.repo}/contents/${CALLER_PATH}?ref=${encodeURIComponent(defaultBranch)}`);
@@ -402,15 +593,32 @@ export function run(argv, { gh = realGh, out = console.log, err = console.error 
     const after = setAiReview(before, opts.aiReview);
     if (after === before) out(`\n# The AI review is already on in ${CALLER_PATH} with these values. Nothing to change there.`);
     else {
-      const baseSha = api(`repos/${opts.repo}/git/ref/heads/${defaultBranch.split('/').map(encodeURIComponent).join('/')}`).object.sha;
-      let branchExists = true;
+      const baseSha = baseShaOf(defaultBranch);
+      const branchExists = branchExistsOn(AI_REVIEW_BRANCH);
+      calls.push(...aiReviewCalls({ repo: opts.repo, defaultBranch, baseSha, branchExists, fileSha: file.sha, content: after }));
+    }
+  }
+
+  // The AI tool files are part of the standard setup (a run with --team or --reviewer) and of any run
+  // that names --tools. A run that only turns the AI review on does not open a second pull request.
+  const tools = opts.tools ?? (opts.team || opts.reviewer ? TOOL_NAMES : undefined);
+  if (tools) {
+    const defaultBranch = defaultBranchOf();
+    const wanted = [AGENTS_PATH, ...(tools.includes('claude') ? [CLAUDE_SETTINGS_PATH, CLAUDE_MD_PATH, CLAUDE_MD_ALT_PATH] : []), ...(tools.includes('copilot') ? [COPILOT_PATH] : [])];
+    const existing = {};
+    for (const p of wanted) {
       try {
-        api(`repos/${opts.repo}/git/ref/heads/${AI_REVIEW_BRANCH}`);
+        const f = api(`repos/${opts.repo}/contents/${p}?ref=${encodeURIComponent(defaultBranch)}`);
+        existing[p] = { text: Array.isArray(f) ? '' : Buffer.from(f.content ?? '', 'base64').toString('utf8'), sha: Array.isArray(f) ? undefined : f.sha };
       } catch (e) {
         if (!notFound(e)) throw e;
-        branchExists = false;
       }
-      calls.push(...aiReviewCalls({ repo: opts.repo, defaultBranch, baseSha, branchExists, fileSha: file.sha, content: after }));
+    }
+    const { files, kept } = toolFilesPlan({ tools, existing });
+    out(`\n# AI tool files (${tools.length ? tools.join(' and ') : 'AGENTS.md only'}): ${files.length ? `${files.length} to add or update` : 'nothing to add'}`);
+    if (kept.length) out(['Kept as they are:', ...kept.map((k) => `  - ${k.path}: ${k.why}`)].join('\n'));
+    if (files.length) {
+      calls.push(...toolFilesCalls({ repo: opts.repo, defaultBranch, baseSha: baseShaOf(defaultBranch), branchExists: branchExistsOn(TOOLS_BRANCH), files, kept }));
     }
   }
 
