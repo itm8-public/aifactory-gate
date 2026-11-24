@@ -83,12 +83,18 @@ jobs:
             echo "git reset --hard origin/main   # the release commit lives on the tags, not on main"
             echo '```'
             echo
-            echo "Opt-in repos pin \`@$NEXT\` to soak this version before it is promoted."
-            echo
-            echo "**2. Promote to stable (\`@$MAJOR\`)** once the soak is clean — this is what rolls it"
-            echo "out to all \`@$MAJOR\` customers:"
+            echo "**2. Canary:** real runs of \`gate.yml@$NEXT\` on the known cases. It records the"
+            echo "commit status \`aifactory/canary\` on the release commit; if it is red, \`@$MAJOR\` does not move:"
             echo '```'
-            echo "git fetch origin $NEXT && git tag -f $MAJOR $NEXT && git push -f origin $MAJOR"
-            echo "gh release edit v$VERSION --prerelease=false"
+            echo "node scripts/canary.mjs"
+            echo '```'
+            echo
+            echo "**3. Soak:** 48 hours on itm8's own repositories that call \`@$NEXT\`, with no gate problem."
+            echo
+            echo "**4. Promote to stable (\`@$MAJOR\`).** This rolls it out to every \`@$MAJOR\` customer. The command"
+            echo "refuses without a green canary on the same commit and is a dry run until \`--apply\`:"
+            echo '```'
+            echo "node scripts/release.mjs promote $VERSION"
+            echo "node scripts/release.mjs promote $VERSION --apply"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
