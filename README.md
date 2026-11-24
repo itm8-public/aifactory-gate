@@ -63,10 +63,14 @@ Level 1 runs the same checks but never blocks. Levels 2 and 3 block on anything 
    node scripts/setup-repo.mjs --repo OWNER/NAME --team aifactory-review --apply
    ```
 
-   It creates the ruleset `aifactory gate` (pull request, code owner review, required check `gate / verdict`, no force push or deletion) and the environments `dev` and `prod` (deploys from `main` only; `prod` needs the itm8 reviewer).
+   It creates the ruleset `aifactory gate` (pull request, code owner review, required check `gate / verdict`, no force push or deletion) and the environments `dev` and `prod` (deploys from `main` only; `prod` needs the itm8 reviewer). It also prepares one pull request that makes every AI coding tool follow the same rules: `AGENTS.md` and adapters for Claude and GitHub Copilot (`--tools claude,copilot`, the default; `--tools none` for `AGENTS.md` only). Files that already exist are never overwritten, and the output lists what was kept. See [`docs/ai-tools.md`](docs/ai-tools.md), which also covers Lovable.
 4. Open a test pull request with a fake secret and check that the gate blocks it.
 
 Rulesets on private repositories need GitHub Team (organizations) or Pro (personal accounts).
+
+### Any AI tool, the same rules
+
+Customers use Claude, GitHub Copilot, Lovable, Cursor and others, and are never tied to one. The repository carries tool-neutral instructions (`AGENTS.md`) and thin adapters, and the gate runs on GitHub, so the checks are the same whichever tool wrote the change. Add or refresh just these files with `node scripts/setup-repo.mjs --repo OWNER/NAME --tools claude,copilot` (dry run until `--apply`). Details, the Lovable flow (`lovable-sync` through a pull request and the gate) and the files' texts: [`docs/ai-tools.md`](docs/ai-tools.md), [`templates/ai-tools/`](templates/ai-tools).
 
 ### Solo (self-service) profile
 

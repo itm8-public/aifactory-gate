@@ -5,19 +5,30 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  AGENTS_PATH,
   AI_REVIEW_BRANCH,
   CALLER_PATH,
+  CLAUDE_MD_ALT_PATH,
+  CLAUDE_MD_PATH,
+  CLAUDE_SETTINGS_PATH,
+  COPILOT_PATH,
   DEFAULT_TOKEN_SCOPE,
   PROJECT_TOKEN_SCOPE,
   REQUIRED_CHECK,
+  TOOLS_BRANCH,
+  TOOL_NAMES,
   aiReviewCalls,
   checkAiReview,
+  mergeClaudeSettings,
   oidcPrefix,
   oidcSubjects,
   parseArgs,
+  parseTools,
   plan,
   run,
   setAiReview,
+  toolFilesCalls,
+  toolFilesPlan,
 } from '../scripts/setup-repo.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -305,4 +316,284 @@ test('--print-oidc only reads, and prints the immutable prefix when the reposito
   assert.deepEqual(out, ['repo:Org@11/Repo@22'], 'stdout carries the prefix alone, ready to paste');
   assert.match(err.join('\n'), /repo:Org@11\/Repo@22:pull_request\n {2}repo:Org@11\/Repo@22:ref:refs\/heads\/main/);
   assert.equal(writes.length, 0);
+});
+
+// Any AI tool, the same rules: AGENTS.md plus thin adapters, in one pull request, never overwriting.
+const toolTemplate = (name) => readFileSync(path.join(root, 'templates/ai-tools', name), 'utf8');
+const AGENTS = toolTemplate('AGENTS.template.md');
+const SETTINGS = JSON.parse(toolTemplate('claude-settings.template.json'));
+
+test('--tools chooses the adapters: both by default, one, or none', () => {
+  assert.deepEqual(parseTools('claude,copilot'), ['claude', 'copilot']);
+  assert.deepEqual(parseTools(' Copilot , CLAUDE '), ['claude', 'copilot'], 'case, spaces and order do not matter');
+  assert.deepEqual(parseTools('copilot'), ['copilot']);
+  assert.deepEqual(parseTools('none'), [], 'AGENTS.md only');
+  for (const bad of ['', ',', 'cursor', 'claude,gemini', 'none,claude']) assert.throws(() => parseTools(bad), /--tools takes claude, copilot[\s\S]*Nothing was changed/, bad);
+  assert.equal(parseArgs(['--repo', 'o/r', '--reviewer', 'u']).tools, undefined, 'left unset, so the run defaults to both');
+  assert.deepEqual(parseArgs(['--repo', 'o/r', '--reviewer', 'u', '--tools', 'copilot']).tools, ['copilot']);
+  assert.deepEqual(TOOL_NAMES, ['claude', 'copilot']);
+});
+
+test('--tools alone adds only the AI tool files; it never stands in for the ruleset options', () => {
+  assert.deepEqual(parseArgs(['--repo', 'o/r', '--tools', 'claude,copilot']), { apply: false, repo: 'o/r', tools: ['claude', 'copilot'] });
+  assert.throws(() => parseArgs(['--repo', 'o/r']), /exactly one of --team or --reviewer \(or --tools alone/);
+  assert.throws(() => parseArgs(['--repo', 'o/r', '--tools', 'claude', '--profile', 'solo']), /needs --team or --reviewer/);
+  assert.throws(() => parseArgs(['--repo', 'o/r', '--team', 't', '--reviewer', 'u', '--tools', 'claude']), /exactly one/);
+  assert.throws(() => parseArgs(['--repo', 'o/r', '--print-oidc', '--tools', 'claude']), /only reads/);
+  assert.equal(parseArgs([...aiArgs(), '--tools', 'claude']).tools[0], 'claude', 'with --ai-review it asks for the files too');
+});
+
+test('AGENTS.md carries the change flow and the rules, in order, in plain words', () => {
+  const flow = AGENTS.slice(AGENTS.indexOf('## How a change gets in'), AGENTS.indexOf('## Rules that never change'));
+  const at = (word) => flow.indexOf(word);
+  assert.ok(at('branch') >= 0 && at('branch') < at('pull request') && at('pull request') < at('gate / verdict') && at('gate / verdict') < at('merge') && at('merge') < at('`dev`'), 'branch, pull request, gate / verdict, merge, dev');
+  assert.match(AGENTS, /Never push to `main`/);
+  assert.match(AGENTS, /Work through pull requests only/);
+  assert.match(AGENTS, /Never put secrets in code/);
+  assert.match(AGENTS, /`needs-person` means a person at itm8 has to look at the change/);
+  assert.match(AGENTS, /itm8 decides both and sets them in `\.github\/workflows\/aifactory-gate\.yml`/);
+  assert.match(AGENTS, /never ask the person which zone or level/);
+  assert.match(AGENTS, /`\/aifactory-code:submit`[\s\S]*Otherwise open a normal pull request/);
+});
+
+test('no template says how the AI review works or speaks to a reviewer', () => {
+  // A change that describes the review, or addresses a reviewer, is itself flagged by the gate's steering check.
+  for (const name of ['AGENTS.template.md', 'CLAUDE.template.md', 'copilot-instructions.template.md', 'claude-settings.template.json']) {
+    assert.doesNotMatch(toolTemplate(name), /review|steer|verdict decides|ignore (all|previous)|approve (this|it)/i, name);
+  }
+});
+
+test('the adapters point to AGENTS.md and turn on the itm8 plugin', () => {
+  assert.match(toolTemplate('CLAUDE.template.md'), /^@AGENTS\.md$/m, 'Claude Code reads AGENTS.md only through this import');
+  assert.match(toolTemplate('copilot-instructions.template.md'), /\]\(\.\.\/AGENTS\.md\)/, 'the link works from .github/');
+  assert.ok(toolTemplate('copilot-instructions.template.md').length < 700, 'a short pointer, not a second rulebook');
+  assert.deepEqual(SETTINGS, {
+    extraKnownMarketplaces: { 'itm8-aifactory-code': { source: { source: 'github', repo: 'itm8-public/aifactory-code' } } },
+    enabledPlugins: { 'aifactory-code@itm8-aifactory-code': true },
+  });
+});
+
+test('mergeClaudeSettings adds the plugin and changes nothing else', () => {
+  const mine = { model: 'opus', permissions: { allow: ['Bash(npm test)'] }, enabledPlugins: { 'other@market': true }, extraKnownMarketplaces: { mine: { source: { source: 'github', repo: 'me/m' } } } };
+  const { settings, added, kept } = mergeClaudeSettings(mine);
+  assert.deepEqual(added, ['extraKnownMarketplaces.itm8-aifactory-code', 'enabledPlugins.aifactory-code@itm8-aifactory-code']);
+  assert.deepEqual(kept, []);
+  assert.equal(settings.model, 'opus');
+  assert.deepEqual(settings.permissions, mine.permissions);
+  assert.equal(settings.enabledPlugins['other@market'], true);
+  assert.ok(settings.extraKnownMarketplaces.mine);
+  assert.deepEqual(mine.enabledPlugins, { 'other@market': true }, 'the input is not mutated');
+  assert.deepEqual(mergeClaudeSettings({}).settings, SETTINGS);
+  const again = mergeClaudeSettings(settings);
+  assert.deepEqual([again.added, again.kept], [[], []], 'running it again changes nothing');
+});
+
+test('mergeClaudeSettings never overrides a choice that is already made', () => {
+  const off = { enabledPlugins: { 'aifactory-code@itm8-aifactory-code': false } };
+  const { settings, added, kept } = mergeClaudeSettings(off);
+  assert.equal(settings.enabledPlugins['aifactory-code@itm8-aifactory-code'], false, 'a plugin switched off stays off');
+  assert.deepEqual(added, ['extraKnownMarketplaces.itm8-aifactory-code']);
+  assert.match(kept[0], /enabledPlugins\.aifactory-code@itm8-aifactory-code is set differently/);
+  assert.throws(() => mergeClaudeSettings([]), /not a JSON object/);
+  assert.throws(() => mergeClaudeSettings({ enabledPlugins: ['x'] }), /"enabledPlugins" in it is not a JSON object/);
+});
+
+const found = (map) => Object.fromEntries(Object.entries(map).map(([p, text]) => [p, { text, sha: `sha-${p}` }]));
+
+test('toolFilesPlan: a bare repository gets AGENTS.md and both adapters', () => {
+  const { files, kept } = toolFilesPlan({ tools: ['claude', 'copilot'], existing: {} });
+  assert.deepEqual(files.map((f) => f.path), [AGENTS_PATH, CLAUDE_SETTINGS_PATH, CLAUDE_MD_PATH, COPILOT_PATH]);
+  assert.deepEqual(kept, []);
+  assert.equal(files[0].content, AGENTS);
+  assert.deepEqual(JSON.parse(files[1].content), SETTINGS);
+  assert.ok(files.every((f) => !f.sha), 'all new files');
+});
+
+test('toolFilesPlan: --tools picks the adapters; AGENTS.md is always there', () => {
+  const paths = (tools) => toolFilesPlan({ tools, existing: {} }).files.map((f) => f.path);
+  assert.deepEqual(paths(['claude']), [AGENTS_PATH, CLAUDE_SETTINGS_PATH, CLAUDE_MD_PATH]);
+  assert.deepEqual(paths(['copilot']), [AGENTS_PATH, COPILOT_PATH]);
+  assert.deepEqual(paths([]), [AGENTS_PATH]);
+});
+
+test('toolFilesPlan: an existing file is kept and the output says why', () => {
+  const existing = found({
+    [AGENTS_PATH]: '# Our own rules\n',
+    [CLAUDE_MD_PATH]: '# Claude notes\nUse tabs.\n',
+    [COPILOT_PATH]: 'Be brief.\n',
+  });
+  const { files, kept } = toolFilesPlan({ tools: ['claude', 'copilot'], existing });
+  assert.deepEqual(files.map((f) => f.path), [CLAUDE_SETTINGS_PATH], 'only the missing settings file is added');
+  assert.deepEqual(kept.map((k) => k.path), [AGENTS_PATH, CLAUDE_MD_PATH, COPILOT_PATH]);
+  assert.match(kept[1].why, /does not import AGENTS\.md: add the line "@AGENTS\.md"/, 'a CLAUDE.md without the import is called out, not edited');
+  assert.match(kept[2].why, /GitHub Copilot also reads AGENTS\.md by itself/);
+});
+
+test('toolFilesPlan: a CLAUDE.md that already imports AGENTS.md, or sits in .claude/, stops a new one', () => {
+  const ok = toolFilesPlan({ tools: ['claude'], existing: found({ [CLAUDE_MD_PATH]: 'Rules:\n@AGENTS.md\n' }) });
+  assert.ok(!ok.files.some((f) => f.path === CLAUDE_MD_PATH));
+  assert.match(ok.kept.find((k) => k.path === CLAUDE_MD_PATH).why, /already imports @AGENTS\.md/);
+  const alt = toolFilesPlan({ tools: ['claude'], existing: found({ [CLAUDE_MD_ALT_PATH]: 'notes' }) });
+  assert.ok(!alt.files.some((f) => f.path === CLAUDE_MD_PATH), 'Claude Code reads .claude/CLAUDE.md too');
+  assert.equal(alt.kept.find((k) => k.path === CLAUDE_MD_ALT_PATH).path, CLAUDE_MD_ALT_PATH);
+  const copilot = toolFilesPlan({ tools: ['copilot'], existing: found({ [COPILOT_PATH]: 'See AGENTS.md\n' }) });
+  assert.match(copilot.kept.find((k) => k.path === COPILOT_PATH).why, /already points to AGENTS\.md/);
+});
+
+test('toolFilesPlan: an existing .claude/settings.json is merged with its sha, keeping every other setting', () => {
+  const mine = `${JSON.stringify({ model: 'opus', permissions: { deny: ['Bash(rm *)'] } }, null, 4)}\n`;
+  const { files, kept } = toolFilesPlan({ tools: ['claude'], existing: found({ [CLAUDE_SETTINGS_PATH]: mine }) });
+  const settings = files.find((f) => f.path === CLAUDE_SETTINGS_PATH);
+  assert.equal(settings.sha, `sha-${CLAUDE_SETTINGS_PATH}`, 'an update of the existing file, not a create');
+  const merged = JSON.parse(settings.content);
+  assert.equal(merged.model, 'opus');
+  assert.deepEqual(merged.permissions, { deny: ['Bash(rm *)'] });
+  assert.equal(merged.enabledPlugins['aifactory-code@itm8-aifactory-code'], true);
+  assert.match(settings.what, /merged into the existing file/);
+  assert.deepEqual(kept, []);
+  // CRLF files stay CRLF, and a BOM does not stop the merge.
+  const crlf = toolFilesPlan({ tools: ['claude'], existing: found({ [CLAUDE_SETTINGS_PATH]: `﻿${mine.replace(/\n/g, '\r\n')}` }) });
+  const c = crlf.files.find((f) => f.path === CLAUDE_SETTINGS_PATH).content;
+  assert.ok(c.includes('\r\n') && !/[^\r]\n/.test(c));
+});
+
+test('toolFilesPlan: settings that cannot be merged safely are kept, with what to do by hand', () => {
+  for (const text of ['{ "model": // my note\n "opus" }', '[]', '{"enabledPlugins": "none"}']) {
+    const { files, kept } = toolFilesPlan({ tools: ['claude'], existing: found({ [CLAUDE_SETTINGS_PATH]: text }) });
+    assert.ok(!files.some((f) => f.path === CLAUDE_SETTINGS_PATH), text);
+    assert.match(kept.find((k) => k.path === CLAUDE_SETTINGS_PATH).why, /left as it is\. Add the "extraKnownMarketplaces" and "enabledPlugins" entries/, text);
+  }
+  const done = toolFilesPlan({ tools: ['claude'], existing: found({ [CLAUDE_SETTINGS_PATH]: JSON.stringify(SETTINGS) }) });
+  assert.ok(!done.files.some((f) => f.path === CLAUDE_SETTINGS_PATH));
+  assert.match(done.kept.find((k) => k.path === CLAUDE_SETTINGS_PATH).why, /already has the itm8 plugin/);
+});
+
+test('toolFilesCalls: a branch, each file on it, and one pull request that lists what was added and kept', () => {
+  const { files, kept } = toolFilesPlan({ tools: ['claude', 'copilot'], existing: found({ [CLAUDE_MD_PATH]: 'mine' }) });
+  const calls = toolFilesCalls({ repo: 'o/r', defaultBranch: 'main', baseSha: 'b1', branchExists: false, files, kept });
+  assert.deepEqual(calls.map((c) => `${c.method} ${c.path}`), [
+    'POST repos/o/r/git/refs',
+    `PUT repos/o/r/contents/${AGENTS_PATH}`,
+    `PUT repos/o/r/contents/${CLAUDE_SETTINGS_PATH}`,
+    `PUT repos/o/r/contents/${COPILOT_PATH}`,
+    'POST repos/o/r/pulls',
+  ]);
+  assert.deepEqual(calls[0].body, { ref: `refs/heads/${TOOLS_BRANCH}`, sha: 'b1' });
+  assert.equal(Buffer.from(calls[1].body.content, 'base64').toString('utf8'), AGENTS);
+  assert.ok(calls.slice(1, 4).every((c) => c.body.branch === TOOLS_BRANCH && !('sha' in c.body)));
+  const pr = calls[4].body;
+  assert.deepEqual([pr.head, pr.base], [TOOLS_BRANCH, 'main']);
+  assert.match(pr.body, /Added:\n- `AGENTS\.md`[\s\S]*- `\.github\/copilot-instructions\.md`/);
+  assert.match(pr.body, /Already there, kept as they are:\n- `CLAUDE\.md`/);
+  assert.match(pr.body, /touches `\.github\/`, which the gate asks a person at itm8 to look at/);
+  assert.doesNotMatch(pr.body, /review/i);
+  const again = toolFilesCalls({ repo: 'o/r', defaultBranch: 'main', baseSha: 'b2', branchExists: true, files, kept });
+  assert.deepEqual([again[0].method, again[0].path, again[0].body], ['PATCH', `repos/o/r/git/refs/heads/${TOOLS_BRANCH}`, { sha: 'b2', force: true }]);
+  const noGithub = toolFilesCalls({ repo: 'o/r', defaultBranch: 'main', baseSha: 'b1', branchExists: false, files: files.filter((f) => !f.path.startsWith('.github/')), kept: [] });
+  assert.doesNotMatch(noGithub.at(-1).body.body, /touches `\.github\/`/, 'the heads-up only when .github/ is in the change');
+});
+
+const toolReads = (present = {}) => ({
+  'repos/o/r': { full_name: 'o/r', default_branch: 'main' },
+  'repos/o/r/git/ref/heads/main': { object: { sha: 'b1' } },
+  ...Object.fromEntries(Object.entries(present).map(([p, text]) => [`repos/o/r/contents/${p}?ref=main`, { content: Buffer.from(text).toString('base64'), sha: `s-${p}` }])),
+});
+const writePaths = (gh) => gh.writes.map((w) => `${w.method} ${w.path}`);
+
+test('run --tools: the dry run only reads; --apply opens one pull request with the files', () => {
+  const dry = fakeGh(toolReads());
+  const log = capture();
+  run(['--repo', 'o/r', '--tools', 'claude,copilot'], { gh: dry.gh, ...log });
+  assert.equal(dry.writes.length, 0);
+  const text = log.lines.join('\n');
+  assert.match(text, /# AI tool files \(claude and copilot\): 4 to add or update/);
+  assert.match(text, /# How to work in this repository/, 'the dry run shows the file');
+  assert.match(text, /Dry run\. Nothing was changed/);
+
+  const live = fakeGh(toolReads());
+  run(['--repo', 'o/r', '--tools', 'claude,copilot', '--apply'], { gh: live.gh, ...capture() });
+  assert.deepEqual(writePaths(live), [
+    'POST repos/o/r/git/refs',
+    `PUT repos/o/r/contents/${AGENTS_PATH}`,
+    `PUT repos/o/r/contents/${CLAUDE_SETTINGS_PATH}`,
+    `PUT repos/o/r/contents/${CLAUDE_MD_PATH}`,
+    `PUT repos/o/r/contents/${COPILOT_PATH}`,
+    'POST repos/o/r/pulls',
+  ]);
+  assert.equal(live.writes[0].body.ref, `refs/heads/${TOOLS_BRANCH}`);
+});
+
+test('run --tools: existing files are never overwritten and the output lists what was kept', () => {
+  const gh = fakeGh(toolReads({ [AGENTS_PATH]: 'ours', [CLAUDE_MD_PATH]: 'ours', [COPILOT_PATH]: 'ours', [CLAUDE_SETTINGS_PATH]: '{"model":"opus"}' }));
+  const log = capture();
+  run(['--repo', 'o/r', '--tools', 'claude,copilot', '--apply'], { gh: gh.gh, ...log });
+  assert.deepEqual(writePaths(gh), ['POST repos/o/r/git/refs', `PUT repos/o/r/contents/${CLAUDE_SETTINGS_PATH}`, 'POST repos/o/r/pulls']);
+  const settings = gh.writes[1].body;
+  assert.equal(settings.sha, `s-${CLAUDE_SETTINGS_PATH}`);
+  const merged = JSON.parse(Buffer.from(settings.content, 'base64').toString('utf8'));
+  assert.equal(merged.model, 'opus');
+  assert.equal(merged.enabledPlugins['aifactory-code@itm8-aifactory-code'], true);
+  const text = log.lines.join('\n');
+  assert.match(text, /Kept as they are:\n {2}- AGENTS\.md: already there/);
+  assert.match(text, /- CLAUDE\.md: already there, so it was not changed\. It does not import AGENTS\.md/);
+  assert.match(text, /- \.github\/copilot-instructions\.md: already there/);
+});
+
+test('run --tools: with every file in place there is nothing to change and nothing is written', () => {
+  const present = { [AGENTS_PATH]: 'a', [CLAUDE_MD_PATH]: '@AGENTS.md', [COPILOT_PATH]: 'c', [CLAUDE_SETTINGS_PATH]: JSON.stringify(SETTINGS) };
+  const gh = fakeGh(toolReads(present));
+  const log = capture();
+  run(['--repo', 'o/r', '--tools', 'claude,copilot', '--apply'], { gh: gh.gh, ...log });
+  assert.equal(gh.writes.length, 0);
+  assert.match(log.lines.join('\n'), /nothing to add[\s\S]*Kept as they are[\s\S]*Nothing to change\./);
+});
+
+test('run --tools: a branch left by an earlier run is reset; none and one adapter shrink the pull request', () => {
+  const reads = { ...toolReads(), [`repos/o/r/git/ref/heads/${TOOLS_BRANCH}`]: { object: { sha: 'old' } } };
+  const again = fakeGh(reads);
+  run(['--repo', 'o/r', '--tools', 'none', '--apply'], { gh: again.gh, ...capture() });
+  assert.deepEqual(writePaths(again), [`PATCH repos/o/r/git/refs/heads/${TOOLS_BRANCH}`, `PUT repos/o/r/contents/${AGENTS_PATH}`, 'POST repos/o/r/pulls']);
+  const copilotOnly = fakeGh(toolReads());
+  run(['--repo', 'o/r', '--tools', 'copilot', '--apply'], { gh: copilotOnly.gh, ...capture() });
+  assert.deepEqual(writePaths(copilotOnly).slice(1, -1), [`PUT repos/o/r/contents/${AGENTS_PATH}`, `PUT repos/o/r/contents/${COPILOT_PATH}`]);
+});
+
+test('run: the standard setup (--team) adds the AI tool pull request after the ruleset, both adapters by default', () => {
+  const gh = fakeGh({ ...toolReads(), 'orgs/o/teams/t': { id: 5 }, 'repos/o/r/rulesets': [] });
+  run(['--repo', 'o/r', '--team', 't', '--apply'], { gh: gh.gh, ...capture() });
+  const paths = writePaths(gh);
+  assert.equal(paths[0], 'POST repos/o/r/rulesets');
+  assert.deepEqual(paths.slice(-6), [
+    'POST repos/o/r/git/refs',
+    `PUT repos/o/r/contents/${AGENTS_PATH}`,
+    `PUT repos/o/r/contents/${CLAUDE_SETTINGS_PATH}`,
+    `PUT repos/o/r/contents/${CLAUDE_MD_PATH}`,
+    `PUT repos/o/r/contents/${COPILOT_PATH}`,
+    'POST repos/o/r/pulls',
+  ]);
+  const narrowed = fakeGh({ ...toolReads(), 'orgs/o/teams/t': { id: 5 }, 'repos/o/r/rulesets': [] });
+  run(['--repo', 'o/r', '--team', 't', '--tools', 'claude', '--apply'], { gh: narrowed.gh, ...capture() });
+  assert.ok(!writePaths(narrowed).some((p) => p.endsWith(COPILOT_PATH)));
+});
+
+test('run --ai-review alone does not open the AI tool pull request unless --tools is given', () => {
+  const alone = fakeGh(callerReads(template));
+  run([...aiArgs(), '--apply'], { gh: alone.gh, ...capture() });
+  assert.ok(!writePaths(alone).some((p) => p.includes('AGENTS.md')));
+  assert.equal(alone.writes.filter((w) => w.path === 'repos/o/r/pulls').length, 1);
+  const both = fakeGh(callerReads(template));
+  run([...aiArgs(), '--tools', 'copilot', '--apply'], { gh: both.gh, ...capture() });
+  assert.deepEqual(both.writes.filter((w) => w.path === 'repos/o/r/pulls').map((w) => w.body.head), [AI_REVIEW_BRANCH, TOOLS_BRANCH]);
+});
+
+test('run --tools: an empty repository gets the reason, not a raw API error', () => {
+  const gh = fakeGh({ 'repos/o/r': { full_name: 'o/r', default_branch: 'main' } });
+  assert.throws(() => run(['--repo', 'o/r', '--tools', 'none'], { gh: gh.gh, ...capture() }), /has no commits on main yet[\s\S]*Nothing was changed/);
+});
+
+test('the command refuses a bad --tools value before any GitHub call', () => {
+  const r = spawnSync(process.execPath, [script, '--repo', 'o/r', '--tools', 'cursor'], { encoding: 'utf8', env: { ...process.env, PATH: '' } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /setup-repo: --tools takes claude, copilot/);
+  assert.equal(r.stdout, '');
 });
