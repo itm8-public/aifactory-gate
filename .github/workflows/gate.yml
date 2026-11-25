@@ -62,7 +62,7 @@ on:
 # every caller that does not.
 env:
   # The release workflow replaces this with the digest of the image built from the same commit.
-  GATE_IMAGE: ghcr.io/itm8-public/aifactory-review:0.1.0
+  GATE_IMAGE: ghcr.io/itm8-public/aifactory-review@sha256:0206240ee379561a95364baf7e7973275e7ac79e672e77129917ce70f2b2673c
 
 jobs:
   # A push whose change a pull request's gate run already judged (the same tree on the same base
