@@ -9,12 +9,14 @@
 // and checks that:
 //   - the run used gate.yml at the commit @v0-next points at, and that commit pins an image digest;
 //   - the check "gate / verdict" (the customers' required check) passed only for a pass verdict;
+//   - the tests ran in "gate / tests", the job of their own, and passed; the verdict job did not
+//     run them;
 //   - verdict.json has the expected verdict, exactly the expected reasons and the engine version of
 //     that commit (and, for the AI review cases, the plain-words explanation);
 //   - for a verdict other than pass, the pull request has the gate's comment, saying who acts.
 // A case with `reuseOn` then gets the push to main simulated: a merge commit of its pull request,
 // with the tree the pull request run judged, pushed to that branch. Its push run must reuse the pull
-// request's verdict, not run again.
+// request's verdict, not run again, and its tests job must be skipped.
 // The result is recorded as the commit status aifactory/canary on that gate commit (--no-record
 // skips this); `release.mjs promote` requires it to be success. Exit 1 on any mismatch.
 // Needs the GitHub CLI signed in with write access to both repositories.
@@ -28,6 +30,8 @@ import { CANARY_CONTEXT, GATE_REPO, pinnedImage, tagCommit } from './release.mjs
 export const CANARY_REPO = 'itm8-public/aifactory-gate-canary';
 export const CHANNEL = 'v0-next'; // what the canary's caller pins
 export const CHECK_NAME = 'gate / verdict';
+// The job that runs the canary's test command (npm test), apart from the verdict job.
+export const TESTS_NAME = 'gate / tests';
 const ARTIFACT = 'aifactory-verdict';
 const COMMENT_MARKER = '<!-- aifactory-gate -->';
 
@@ -72,10 +76,11 @@ export const CASES = [
 
 /**
  * What is wrong with one case's run, as a list of plain sentences (empty when it is as expected).
- * `run` is the workflow run, `job` the "gate / verdict" job (or undefined), `record` the parsed
- * verdict.json (or undefined), `gate` what the channel pointed at: { sha, engine }.
+ * `run` is the workflow run, `job` the "gate / verdict" job and `tests` the "gate / tests" job (or
+ * undefined), `record` the parsed verdict.json (or undefined), `gate` what the channel pointed at:
+ * { sha, engine }. `expectTests` is how the tests job must end: success, or skipped on a reuse.
  */
-export function judge(kase, { run, job, record }, gate) {
+export function judge(kase, { run, job, tests, record }, gate, { expectTests = 'success' } = {}) {
   const problems = [];
   const used = (run.referenced_workflows ?? []).find((w) => w.path.startsWith(`${GATE_REPO}/.github/workflows/gate.yml@`));
   if (!used) problems.push(`the run did not call ${GATE_REPO}'s gate.yml`);
@@ -85,7 +90,14 @@ export function judge(kase, { run, job, record }, gate) {
   }
   const conclusion = kase.verdict === 'pass' ? 'success' : 'failure';
   if (!job) problems.push(`no "${CHECK_NAME}" check`);
-  else if (job.conclusion !== conclusion) problems.push(`"${CHECK_NAME}" ended ${job.conclusion}, expected ${conclusion}`);
+  else {
+    if (job.conclusion !== conclusion) problems.push(`"${CHECK_NAME}" ended ${job.conclusion}, expected ${conclusion}`);
+    // Repository code runs only in the tests job; the verdict job runs the engine on a runner that
+    // never ran it.
+    if ((job.steps ?? []).some((s) => s.name === 'Tests')) problems.push(`"${CHECK_NAME}" ran the tests itself, not in "${TESTS_NAME}"`);
+  }
+  if (!tests) problems.push(`no "${TESTS_NAME}" job`);
+  else if (tests.conclusion !== expectTests) problems.push(`"${TESTS_NAME}" ended ${tests.conclusion}, expected ${expectTests}`);
   if (!record) {
     problems.push('no verdict.json');
     return problems;
@@ -118,9 +130,9 @@ export function judgeComment(kase, comments, runStarted) {
   return problems;
 }
 
-/** What is wrong with the push run that should have reused the pull request run's verdict. */
-export function judgeReuse(kase, { run, job, record }, gate, prRunId) {
-  const problems = judge(kase, { run, job, record }, gate);
+/** What is wrong with the push run that should have reused the pull request run's verdict (and so ran no tests). */
+export function judgeReuse(kase, { run, job, tests, record }, gate, prRunId) {
+  const problems = judge(kase, { run, job, tests, record }, gate, { expectTests: 'skipped' });
   if (record && record.reused?.runId !== prRunId) {
     problems.push(record.reused ? `it reused run ${record.reused.runId}, not ${prRunId}` : 'it ran again instead of reusing the pull request verdict');
   }
@@ -185,6 +197,11 @@ export function run(
   const api = (p) => JSON.parse(gh(['api', p]));
   const send = (method, p, body) => JSON.parse(gh(['api', '--method', method, p, '--input', '-'], JSON.stringify(body)));
   const fetchVerdict = download ?? ((runId) => realDownload(gh, runId));
+  // The verdict job and the tests job of a run (skipped jobs are listed too).
+  const jobsOf = (runId) => {
+    const { jobs = [] } = api(`repos/${CANARY_REPO}/actions/runs/${runId}/jobs?per_page=100`);
+    return { job: jobs.find((j) => j.name === CHECK_NAME), tests: jobs.find((j) => j.name === TESTS_NAME) };
+  };
 
   // The commit the channel points at, and what it must run.
   const sha = tagCommit(gh, GATE_REPO, CHANNEL);
@@ -280,8 +297,7 @@ export function run(
     }
     if (!run) return [`${c.kase.reuseOn}: no completed push run within ${Math.round(timeoutMs / 60000)} minutes`];
     c.pushRun = run;
-    const job = api(`repos/${CANARY_REPO}/actions/runs/${run.id}/jobs`).jobs.find((j) => j.name === CHECK_NAME);
-    return judgeReuse(c.kase, { run, job, record: fetchVerdict(run.id) }, gate, c.run.id).map((p) => `${c.kase.reuseOn}: ${p}`);
+    return judgeReuse(c.kase, { run, ...jobsOf(run.id), record: fetchVerdict(run.id) }, gate, c.run.id).map((p) => `${c.kase.reuseOn}: ${p}`);
   };
 
   let bad = 0;
@@ -290,11 +306,10 @@ export function run(
     let problems;
     if (!c.run) problems = [`no completed run within ${Math.round(timeoutMs / 60000)} minutes`];
     else {
-      const job = api(`repos/${CANARY_REPO}/actions/runs/${c.run.id}/jobs`).jobs.find((j) => j.name === CHECK_NAME);
       const record = fetchVerdict(c.run.id);
       c.got = record?.verdict ?? 'none';
       c.record = record;
-      problems = judge(c.kase, { run: c.run, job, record }, gate);
+      problems = judge(c.kase, { run: c.run, ...jobsOf(c.run.id), record }, gate);
       if (c.kase.verdict !== 'pass') {
         problems.push(...judgeComment(c.kase, api(`repos/${CANARY_REPO}/issues/${c.number}/comments?per_page=100`), c.run.run_started_at ?? c.run.created_at));
       }

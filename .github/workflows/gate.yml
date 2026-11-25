@@ -1,5 +1,6 @@
 # The aifactory gate, called from each customer repository (templates/aifactory-gate.yml).
-# Runs the project's tests, then the engine image: scanners, verdict policy, summary.
+# Runs the project's tests in a job of their own, then the engine image (scanners, verdict policy,
+# summary) in the verdict job, on a runner that never ran repository code.
 # The required check in the customer's ruleset is "gate / verdict".
 name: aifactory gate
 
@@ -51,12 +52,14 @@ on:
         default: https://cognitiveservices.azure.com/.default
 
 
-# No workflow-wide permissions on purpose. The verdict job, which runs the project's own tests, sets
-# its own (contents: read, id-token: write) and never gets more. The reuse and comment jobs run no
-# repository code (only the pinned engine image, or gh with the job's own token), so they use what
-# the caller grants: actions: read lets a push to main reuse the pull request's verdict, and
-# pull-requests: write lets the gate post its result on the pull request. A caller that grants
-# neither gets the gate as before. Asking for them here would stop every caller that does not.
+# No workflow-wide permissions on purpose. The tests job is the only job that runs repository code
+# (the project's test command): it gets contents: read and nothing else. The verdict job sets its
+# own (contents: read, id-token: write) and runs only the pinned engine image, on a fresh checkout.
+# The reuse and comment jobs run no repository code (only the pinned engine image, or gh with the
+# job's own token), so they use what the caller grants: actions: read lets a push to main reuse the
+# pull request's verdict, and pull-requests: write lets the gate post its result on the pull
+# request. A caller that grants neither gets the gate as before. Asking for them here would stop
+# every caller that does not.
 env:
   # The release workflow replaces this with the digest of the image built from the same commit.
   GATE_IMAGE: ghcr.io/itm8-public/aifactory-review:0.1.0
@@ -64,8 +67,8 @@ env:
 jobs:
   # A push whose change a pull request's gate run already judged (the same tree on the same base
   # tree, the same gate commit, the same caller inputs) takes that verdict: same change, same verdict,
-  # and the AI review is not paid for twice. Without actions: read, or without such a run, the
-  # verdict job runs in full.
+  # and neither the tests nor the AI review run twice. Without actions: read, or without such a run,
+  # the tests and the verdict job run in full.
   reuse:
     name: reuse
     if: ${{ github.event_name == 'push' }}
@@ -73,6 +76,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       candidate: ${{ steps.find.outputs.candidate }}
+      reused: ${{ steps.check.outputs.reused }}
     steps:
       - name: Find the pull request's verdict
         id: find
@@ -88,11 +92,82 @@ jobs:
             echo "candidate=$(gzip -9c "$RUNNER_TEMP/reuse/reuse-candidate.json" | base64 -w0)" >> "$GITHUB_OUTPUT"
           fi
 
+      # The check the verdict job makes before it takes the verdict, made here first so that the
+      # tests job knows whether to run. The checkout is only read, by the engine image.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ steps.find.outputs.candidate != '' }}
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Check it against this commit
+        id: check
+        if: ${{ steps.find.outputs.candidate != '' }}
+        continue-on-error: true
+        env:
+          CANDIDATE: ${{ steps.find.outputs.candidate }}
+          ZONE: ${{ inputs.zone }}
+          LEVEL: ${{ inputs.level }}
+          PROFILE: ${{ inputs.profile }}
+          AI_REVIEW: ${{ inputs.ai-review && 'on' || 'off' }}
+          AIFACTORY_INPUTS: ${{ toJSON(inputs) }}
+          AIFACTORY_OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          AIFACTORY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/check" "$RUNNER_TEMP/in" && chmod 0777 "$RUNNER_TEMP/check"
+          echo "$CANDIDATE" | base64 -d | gunzip > "$RUNNER_TEMP/in/candidate.json"
+          set +e
+          docker run --rm -e AIFACTORY_INPUTS -e AIFACTORY_OWNER_TYPE -e AIFACTORY_RUN_URL \
+            -v "$GITHUB_WORKSPACE:/repo:ro" -v "$RUNNER_TEMP/check:/out" -v "$RUNNER_TEMP/in:/in:ro" \
+            "$GATE_IMAGE" reuse --repo /repo --out /out --from /in/candidate.json --zone "$ZONE" --level "$LEVEL" \
+            --base HEAD^1 --ai-review "$AI_REVIEW" --profile "$PROFILE"
+          case $? in
+            0|1) echo "reused=true" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # The project's tests, in a job of their own: the only job of the gate that runs repository code.
+  # It gets contents: read and nothing else (no OIDC token), and passes the verdict job one word.
+  # The verdict job then scans a fresh checkout on another runner, so nothing a test does (change
+  # files, replace docker, rewrite the verdict file, read a token from the runner's memory with
+  # sudo) reaches what is scanned or decided. Skipped when no test command is set, and on a push
+  # that reuses the pull request's verdict. The job fails when the tests fail, so the check
+  # "gate / tests" shows it and "Re-run failed jobs" runs them again; the verdict decides as before.
+  tests:
+    name: tests
+    needs: reuse
+    if: ${{ !cancelled() && inputs.test-command != '' && needs.reuse.outputs.reused != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.tests.outcome }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: ${{ inputs.node-version != '' }}
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Tests
+        id: tests
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TEST_COMMAND: ${{ inputs.test-command }}
+        run: bash -eo pipefail -c "$TEST_COMMAND"
+
   verdict:
     name: verdict
-    needs: reuse
-    # Runs whether the reuse job ran (pushes only), found a verdict or not.
-    if: ${{ !cancelled() }}
+    needs: [reuse, tests]
+    # Runs whether the reuse job ran (pushes only), found a verdict or not, and whatever the tests
+    # job did: the Test outcome step turns that into what the policy reads. always(), not
+    # !cancelled(): this job waits for the tests, and a required check whose job is skipped counts
+    # as passed. A run cancelled while the tests run must still end here, in a failed check.
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -108,10 +183,11 @@ jobs:
           fetch-depth: 2
 
       # The engine checks the candidate against this checkout itself (tree, base tree, inputs,
-      # versions). Exit 0 or 1: reused, with that verdict. Anything else: the gate runs in full.
+      # versions), as the reuse job did. Exit 0 or 1: reused, with that verdict. Anything else: the
+      # gate runs in full, and as the tests job was skipped for this push, its tests did not run.
       - name: Reuse the pull request's verdict
         id: reuse
-        if: ${{ needs.reuse.outputs.candidate != '' }}
+        if: ${{ needs.reuse.outputs.reused == 'true' }}
         continue-on-error: true
         env:
           CANDIDATE: ${{ needs.reuse.outputs.candidate }}
@@ -138,19 +214,26 @@ jobs:
                rm -f "$RUNNER_TEMP/gate/"* ;;
           esac
 
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        if: ${{ inputs.node-version != '' && steps.reuse.outputs.reused != 'true' }}
-        with:
-          node-version: ${{ inputs.node-version }}
-
-      - name: Tests
+      # What the tests job reported, as one of five words whatever it wrote: not-configured; success
+      # only from a tests job that passed; failure from one that finished; else cancelled or skipped,
+      # which the policy reads as tests that did not run (a setup step that failed, a timeout, a
+      # push whose reuse fell through). Its output is never echoed: it comes from repository code.
+      - name: Test outcome
         id: tests
-        if: ${{ inputs.test-command != '' && steps.reuse.outputs.reused != 'true' }}
-        continue-on-error: true
-        working-directory: ${{ inputs.working-directory }}
+        if: ${{ steps.reuse.outputs.reused != 'true' }}
         env:
-          TEST_COMMAND: ${{ inputs.test-command }}
-        run: bash -eo pipefail -c "$TEST_COMMAND"
+          CONFIGURED: ${{ inputs.test-command != '' }}
+          JOB: ${{ needs.tests.result }}
+          OUTCOME: ${{ needs.tests.outputs.outcome }}
+        run: |
+          if [ "$CONFIGURED" != true ]; then tests=not-configured
+          elif [ "$JOB" = success ] && [ "$OUTCOME" = success ]; then tests=success
+          elif { [ "$JOB" = success ] || [ "$JOB" = failure ]; } && [ "$OUTCOME" = failure ]; then tests=failure
+          elif [ "$JOB" = cancelled ] || [ "$OUTCOME" = cancelled ]; then tests=cancelled
+          else tests=skipped
+          fi
+          echo "outcome=$tests" >> "$GITHUB_OUTPUT"
+          echo "tests: $tests (tests job: ${JOB:-none})"
 
       # AI review on but a value it needs left empty: no sign-in is tried (it could only fail with a
       # generic error). The engine names the missing values instead, and the policy decides as for
@@ -202,7 +285,7 @@ jobs:
         if: ${{ steps.reuse.outputs.reused != 'true' }}
         continue-on-error: true
         env:
-          TESTS: ${{ inputs.test-command == '' && 'not-configured' || steps.tests.outcome }}
+          TESTS: ${{ steps.tests.outputs.outcome }}
           AIFACTORY_MODEL_ENDPOINT: ${{ inputs.review-endpoint }}
           AIFACTORY_MODEL_TOKEN: ${{ steps.token.outputs.token }}
           AIFACTORY_AI_REVIEW_MISSING: ${{ steps.ai.outputs.missing }}
@@ -265,8 +348,9 @@ jobs:
           retention-days: 90
 
       # The engine exits 0 for pass or an advisory level, 1 otherwise. A missing verdict never passes.
+      # always(): this job may run in a cancelled run, and must not end green with its steps skipped.
       - name: Enforce
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         env:
           OUTCOME: ${{ steps.reuse.outputs.reused == 'true' && steps.reuse.outputs.outcome || steps.gate.outcome }}
           REUSED: ${{ steps.reuse.outputs.reused == 'true' && ' (reused from the pull request)' || '' }}

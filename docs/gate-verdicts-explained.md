@@ -1,7 +1,8 @@
 # Why the gate asks for a person, and how a change gets merged
 
 *A plain-language reference for teams using the itm8 AI Factory gate. Written for version 0.1.0;
-the sections on steering, reuse, who acts and the emergency bypass describe 0.5.0.*
+the sections on steering, reuse, who acts and the emergency bypass describe 0.5.0, and the tests'
+own check 0.6.0.*
 
 ## The short answer
 
@@ -28,6 +29,11 @@ fixed policy turns them into one of three verdicts:
 | `needs-person` | A human has to look before it merges. The change is not necessarily wrong — it is in a category the policy does not decide on its own. |
 
 The verdict is the required status check named **`gate / verdict`** on the `main` branch.
+
+Since 0.6.0 the project's tests run in a check of their own, **`gate / tests`**: its log is the
+test output, and it is red when the tests fail. It is not a required check; `gate / verdict` still
+decides, and a failed test makes it `fail`. To run flaky tests again, use *Re-run failed jobs* on
+the run's page: it runs `gate / tests` and then `gate / verdict` again.
 
 ## What the responsibility levels actually mean
 
