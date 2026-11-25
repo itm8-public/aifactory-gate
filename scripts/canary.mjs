@@ -4,19 +4,23 @@
 //   node scripts/canary.mjs [--no-record]
 //
 // The cases are branches in itm8-public/aifactory-gate-canary, each with an open draft pull request
-// whose caller runs gate.yml@v0-next. For each case this pushes an empty commit to the branch (a push
-// by a person starts the workflow; one made with the workflow token would not), waits for the run,
-// and checks that:
-//   - the run used gate.yml at the commit @v0-next points at, and that commit pins an image digest;
+// (into main, or into the case's `base`) whose caller runs gate.yml@v0-next. For each case this
+// pushes an empty commit to the case branch (a push by a person starts the workflow; one made with
+// the workflow token would not), waits for the run, and checks that:
+//   - GitHub started the run, and it used gate.yml at the commit @v0-next points at, and that commit
+//     pins an image digest;
 //   - the check "gate / verdict" (the customers' required check) passed only for a pass verdict;
 //   - the tests ran in "gate / tests", the job of their own, and passed; the verdict job did not
 //     run them;
+//   - the jobs that run with what the caller grants ("gate / reuse", "gate / comment") did not fail;
 //   - verdict.json has the expected verdict, exactly the expected reasons and the engine version of
 //     that commit (and, for the AI review cases, the plain-words explanation);
-//   - for a verdict other than pass, the pull request has the gate's comment, saying who acts.
-// A case with `reuseOn` then gets the push to main simulated: a merge commit of its pull request,
-// with the tree the pull request run judged, pushed to that branch. Its push run must reuse the pull
-// request's verdict, not run again, and its tests job must be skipped.
+//   - for a verdict other than pass, the pull request has the gate's comment, saying who acts; a
+//     case with `noComment` must have none.
+// A case with `reuseOn` or `fullRunOn` then gets the push to main simulated: a merge commit of its
+// pull request, with the tree the pull request run judged, pushed to that branch. With `reuseOn` the
+// push run must reuse the pull request's verdict, not run again, and its tests job must be skipped;
+// with `fullRunOn` (a caller without actions: read) it must run in full and give the same verdict.
 // The result is recorded as the commit status aifactory/canary on that gate commit (--no-record
 // skips this); `release.mjs promote` requires it to be success. Exit 1 on any mismatch.
 // Needs the GitHub CLI signed in with write access to both repositories.
@@ -32,6 +36,9 @@ export const CHANNEL = 'v0-next'; // what the canary's caller pins
 export const CHECK_NAME = 'gate / verdict';
 // The job that runs the canary's test command (npm test), apart from the verdict job.
 export const TESTS_NAME = 'gate / tests';
+// The gate's jobs with no permissions block of their own: they run with what the caller grants. A
+// caller that grants less must get the gate without what they add, never a failed job.
+export const CALLER_JOBS = ['gate / reuse', 'gate / comment'];
 const ARTIFACT = 'aifactory-verdict';
 const COMMENT_MARKER = '<!-- aifactory-gate -->';
 
@@ -72,6 +79,21 @@ export const CASES = [
     needsVariable: 'AIFACTORY_AZURE_CLIENT_ID',
     reuseOn: 'canary-push/describes-review',
   },
+  {
+    // A caller that grants only what the customer template granted before 0.5.0 (contents: read,
+    // id-token: write), as callers that predate it still do. GitHub refuses to start a called
+    // workflow whose job asks for more than the caller grants, so a gate job that needs a new
+    // permission would stop every such caller. Its base branch holds that caller, so the pull
+    // request's change is one README line. Without pull-requests: write there is no comment; without
+    // actions: read the push of its merge cannot reuse the verdict and runs in full.
+    branch: 'canary-legacy/case',
+    base: 'canary-legacy/base',
+    what: 'a caller with the permissions before 0.5.0; then its merge is pushed',
+    verdict: 'pass',
+    reasons: [],
+    noComment: true,
+    fullRunOn: 'canary-push/legacy',
+  },
 ];
 
 /**
@@ -82,6 +104,8 @@ export const CASES = [
  */
 export function judge(kase, { run, job, tests, record }, gate, { expectTests = 'success' } = {}) {
   const problems = [];
+  // What a caller sees when a gate job asks for a permission it does not grant: no jobs at all.
+  if (run.conclusion === 'startup_failure') problems.push('GitHub did not start the workflow (startup_failure): does a gate job ask for more permissions than the caller grants?');
   const used = (run.referenced_workflows ?? []).find((w) => w.path.startsWith(`${GATE_REPO}/.github/workflows/gate.yml@`));
   if (!used) problems.push(`the run did not call ${GATE_REPO}'s gate.yml`);
   else {
@@ -114,13 +138,20 @@ export function judge(kase, { run, job, tests, record }, gate, { expectTests = '
   return problems;
 }
 
+/** What is wrong with the run's jobs that use the caller's permissions: they must not fail. */
+export function judgeJobs(jobs) {
+  return jobs.filter((j) => CALLER_JOBS.includes(j.name) && !['success', 'skipped'].includes(j.conclusion)).map((j) => `"${j.name}" ended ${j.conclusion}`);
+}
+
 /**
  * What is wrong with the gate's pull request comment for a case's run (empty when it is as
- * expected). Only a verdict other than pass needs one; it must be newer than the run's start.
+ * expected). Only a verdict other than pass needs one; it must be newer than the run's start. A case
+ * with `noComment` must have none.
  */
 export function judgeComment(kase, comments, runStarted) {
-  if (kase.verdict === 'pass') return [];
   const mine = comments.filter((c) => c.user?.login === 'github-actions[bot]' && String(c.body).startsWith(COMMENT_MARKER));
+  if (kase.noComment) return mine.length ? [`${mine.length} gate comment(s) on the pull request, expected none`] : [];
+  if (kase.verdict === 'pass') return [];
   if (mine.length !== 1) return [`${mine.length} gate comments on the pull request, expected 1`];
   const [c] = mine;
   const problems = [];
@@ -136,6 +167,13 @@ export function judgeReuse(kase, { run, job, tests, record }, gate, prRunId) {
   if (record && record.reused?.runId !== prRunId) {
     problems.push(record.reused ? `it reused run ${record.reused.runId}, not ${prRunId}` : 'it ran again instead of reusing the pull request verdict');
   }
+  return problems;
+}
+
+/** What is wrong with the push run whose caller cannot read the pull request run: it must run in full, tests included. */
+export function judgeFullRun(kase, { run, job, tests, record }, gate) {
+  const problems = judge(kase, { run, job, tests, record }, gate);
+  if (record?.reused) problems.push(`it reused run ${record.reused.runId}; a caller without actions: read must run in full`);
   return problems;
 }
 
@@ -197,10 +235,11 @@ export function run(
   const api = (p) => JSON.parse(gh(['api', p]));
   const send = (method, p, body) => JSON.parse(gh(['api', '--method', method, p, '--input', '-'], JSON.stringify(body)));
   const fetchVerdict = download ?? ((runId) => realDownload(gh, runId));
-  // The verdict job and the tests job of a run (skipped jobs are listed too).
+  // The verdict job and the tests job of a run (skipped jobs are listed too), and what is wrong with
+  // the jobs that use the caller's permissions.
   const jobsOf = (runId) => {
     const { jobs = [] } = api(`repos/${CANARY_REPO}/actions/runs/${runId}/jobs?per_page=100`);
-    return { job: jobs.find((j) => j.name === CHECK_NAME), tests: jobs.find((j) => j.name === TESTS_NAME) };
+    return { job: jobs.find((j) => j.name === CHECK_NAME), tests: jobs.find((j) => j.name === TESTS_NAME), problems: judgeJobs(jobs) };
   };
 
   // The commit the channel points at, and what it must run.
@@ -229,6 +268,10 @@ export function run(
     }
     const pulls = api(`repos/${CANARY_REPO}/pulls?state=open&head=${owner}:${enc(kase.branch)}`);
     if (pulls.length !== 1) throw new Error(`${kase.branch} needs one open pull request in ${CANARY_REPO}; it has ${pulls.length}. See that repository's README.`);
+    // The base decides what the pull request's change is: into main, the legacy case's change would
+    // be its caller, not one README line.
+    const base = kase.base ?? 'main';
+    if (pulls[0].base?.ref !== base) throw new Error(`${kase.branch}'s pull request in ${CANARY_REPO} goes into ${pulls[0].base?.ref}, not ${base}. See that repository's README.`);
     cases.push({ kase, pr: pulls[0].html_url, number: pulls[0].number });
   }
 
@@ -266,11 +309,13 @@ export function run(
   }
 
   // The push to main, simulated on a branch of its own: a merge commit of the pull request with the
-  // tree its run judged, on the base it judged it against. Its run must take that verdict.
-  const pushAndJudgeReuse = (c) => {
+  // tree its run judged, on the base it judged it against. Its run must take that verdict
+  // (`reuseOn`), or, for a caller that cannot read the pull request run, run in full (`fullRunOn`).
+  const pushAndJudgeMerge = (c) => {
+    const target = c.kase.reuseOn ?? c.kase.fullRunOn;
     const { subject } = c.record ?? {};
-    if (!subject?.tree || !subject.base) return ['the pull request verdict has no subject to reuse'];
-    const ref = `repos/${CANARY_REPO}/git/refs/heads/${enc(c.kase.reuseOn)}`;
+    if (!subject?.tree || !subject.base) return [`${target}: the pull request verdict has no subject to push`];
+    const ref = `repos/${CANARY_REPO}/git/refs/heads/${enc(target)}`;
     const pushMerge = (attempt) => {
       const message = `canary: merge of ${c.kase.branch} (pull request run ${c.run.id}), attempt ${attempt}`;
       const merge = send('POST', `repos/${CANARY_REPO}/git/commits`, { message, tree: subject.tree, parents: [subject.base, c.sha] }).sha;
@@ -278,7 +323,7 @@ export function run(
         send('PATCH', ref, { sha: merge, force: true });
       } catch (e) {
         if (!notFound(e) && !/HTTP 422|Reference does not exist/i.test(`${e.stderr ?? ''}${e.message ?? ''}`)) throw e;
-        send('POST', `repos/${CANARY_REPO}/git/refs`, { ref: `refs/heads/${c.kase.reuseOn}`, sha: merge });
+        send('POST', `repos/${CANARY_REPO}/git/refs`, { ref: `refs/heads/${target}`, sha: merge });
       }
       return { merge, at: now() };
     };
@@ -290,14 +335,17 @@ export function run(
       const r = latestRun(api(`repos/${CANARY_REPO}/actions/runs?head_sha=${pushed.merge}&per_page=20`).workflow_runs ?? [], 'push');
       if (r?.status === 'completed') run = api(`repos/${CANARY_REPO}/actions/runs/${r.id}`);
       else if (!r && !nudged && now() - pushed.at >= nudgeMs) {
-        out(`${c.kase.reuseOn}: no run started within ${Math.round(nudgeMs / 60000)} minutes; pushing the merge again.`);
+        out(`${target}: no run started within ${Math.round(nudgeMs / 60000)} minutes; pushing the merge again.`);
         pushed = pushMerge(2);
         nudged = true;
       } else sleep(pollMs);
     }
-    if (!run) return [`${c.kase.reuseOn}: no completed push run within ${Math.round(timeoutMs / 60000)} minutes`];
+    if (!run) return [`${target}: no completed push run within ${Math.round(timeoutMs / 60000)} minutes`];
     c.pushRun = run;
-    return judgeReuse(c.kase, { run, ...jobsOf(run.id), record: fetchVerdict(run.id) }, gate, c.run.id).map((p) => `${c.kase.reuseOn}: ${p}`);
+    const { job, tests, problems } = jobsOf(run.id);
+    const record = fetchVerdict(run.id);
+    const judged = c.kase.reuseOn ? judgeReuse(c.kase, { run, job, tests, record }, gate, c.run.id) : judgeFullRun(c.kase, { run, job, tests, record }, gate);
+    return [...judged, ...problems].map((p) => `${target}: ${p}`);
   };
 
   let bad = 0;
@@ -306,19 +354,20 @@ export function run(
     let problems;
     if (!c.run) problems = [`no completed run within ${Math.round(timeoutMs / 60000)} minutes`];
     else {
+      const { job, tests, problems: jobProblems } = jobsOf(c.run.id);
       const record = fetchVerdict(c.run.id);
       c.got = record?.verdict ?? 'none';
       c.record = record;
-      problems = judge(c.kase, { run: c.run, ...jobsOf(c.run.id), record }, gate);
-      if (c.kase.verdict !== 'pass') {
+      problems = [...judge(c.kase, { run: c.run, job, tests, record }, gate), ...jobProblems];
+      if (c.kase.verdict !== 'pass' || c.kase.noComment) {
         problems.push(...judgeComment(c.kase, api(`repos/${CANARY_REPO}/issues/${c.number}/comments?per_page=100`), c.run.run_started_at ?? c.run.created_at));
       }
-      if (c.kase.reuseOn && !problems.length) problems.push(...pushAndJudgeReuse(c));
+      if ((c.kase.reuseOn || c.kase.fullRunOn) && !problems.length) problems.push(...pushAndJudgeMerge(c));
     }
     if (problems.length) bad++;
     rows.push(
       `${problems.length ? 'MISMATCH' : 'ok      '} ${c.kase.branch.padEnd(26)} expect ${c.kase.verdict.padEnd(12)} got ${(c.got ?? 'none').padEnd(12)} ${c.run?.html_url ?? c.pr}` +
-        (c.pushRun ? `\n         push of the merge (${c.kase.reuseOn}): ${c.pushRun.html_url}` : '') +
+        (c.pushRun ? `\n         push of the merge (${c.kase.reuseOn ?? c.kase.fullRunOn}): ${c.pushRun.html_url}` : '') +
         problems.map((p) => `\n         - ${p}`).join(''),
     );
   }
