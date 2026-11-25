@@ -96,10 +96,12 @@ up the ruleset in the same run, add `--team SLUG` or `--reviewer LOGIN` (see
 
 What it does: it reads the repository's caller workflow on the default branch and sets the five AI
 review lines in the gate job's `with:` block (`ai-review`, `review-endpoint`, `azure-client-id`,
-`azure-tenant-id`, `review-token-scope`). No other line changes. It commits the file to the branch
-`aifactory/ai-review` and opens a pull request. Running it again resets that branch and updates the
-same pull request. It needs write access to the repository, and a GitHub CLI token with the
-`workflow` scope (`gh auth refresh -s workflow`).
+`azure-tenant-id`, `review-token-scope`). Where the caller's `permissions` do not name them yet, it
+also adds `actions: read` and `pull-requests: write` (optional; see [`README.md`](../README.md),
+*Caller permissions*); a value that is there is kept. No other line changes. It commits the file to
+the branch `aifactory/ai-review` and opens a pull request. Running it again resets that branch and
+updates the same pull request. It needs write access to the repository, and a GitHub CLI token with
+the `workflow` scope (`gh auth refresh -s workflow`).
 
 It refuses, exits non-zero and changes nothing, when:
 

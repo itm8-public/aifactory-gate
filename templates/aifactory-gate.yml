@@ -11,6 +11,8 @@ on:
 permissions:
   contents: read
   id-token: write # the gate signs in to itm8's review Foundry with GitHub OIDC when ai-review is on
+  actions: read # a push to main reuses the pull request's verdict
+  pull-requests: write # the gate posts its result as one pull request comment
 
 jobs:
   gate:

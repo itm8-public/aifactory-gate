@@ -13,6 +13,7 @@ import {
   CLAUDE_SETTINGS_PATH,
   COPILOT_PATH,
   DEFAULT_TOKEN_SCOPE,
+  OPTIONAL_PERMISSIONS,
   PROJECT_TOKEN_SCOPE,
   REQUIRED_CHECK,
   TOOLS_BRANCH,
@@ -200,7 +201,14 @@ test('setAiReview keeps CRLF line ends and adds keys a trimmed caller lacks', ()
   const out = setAiReview(minimal, values);
   assert.ok(!/[^\r]\n/.test(out), 'CRLF kept');
   const lines = out.split('\r\n');
-  assert.deepEqual(lines.slice(7, 14), [
+  assert.deepEqual(lines.slice(0, 5), [
+    'permissions:',
+    '  contents: read',
+    '  id-token: write',
+    "  actions: read # a push to main reuses the pull request's verdict",
+    '  pull-requests: write # the gate posts its result as one pull request comment',
+  ]);
+  assert.deepEqual(lines.slice(9, 16), [
     '      test-command: |',
     '        npm test',
     '      ai-review: true',
@@ -209,7 +217,71 @@ test('setAiReview keeps CRLF line ends and adds keys a trimmed caller lacks', ()
     `      azure-tenant-id: '${TENANT}'`,
     `      review-token-scope: '${DEFAULT_TOKEN_SCOPE}'`,
   ]);
-  assert.equal(lines[14], '    uses: itm8-public/aifactory-gate/.github/workflows/gate.yml@v0');
+  assert.equal(lines[16], '    uses: itm8-public/aifactory-gate/.github/workflows/gate.yml@v0');
+});
+
+/** The template without the two optional permission lines: a caller written before gate 0.5.0. */
+const withoutOptional = (text) => text.replace(/^ *(actions|pull-requests):.*\r?\n/gm, '');
+
+test('setAiReview grants the optional permissions a caller lacks, exactly as the template has them', () => {
+  const older = withoutOptional(template);
+  assert.notEqual(older, template);
+  assert.doesNotThrow(() => setAiReview(older, values), 'a caller without them is not refused');
+  assert.equal(setAiReview(older, values), setAiReview(template, values));
+  assert.equal(setAiReview(setAiReview(older, values), values), setAiReview(template, values), 'running it again changes nothing');
+});
+
+test('setAiReview keeps a permission the caller already names, and a block it cannot extend', () => {
+  const chosen = template.replace(/^ {2}pull-requests:.*$/m, '  pull-requests: read').replace(/^ {2}actions:.*$/m, '  actions: none # no reuse here');
+  const out = setAiReview(chosen, values);
+  assert.match(out, /^ {2}pull-requests: read$/m);
+  assert.match(out, /^ {2}actions: none # no reuse here$/m);
+  assert.equal(out.match(/^ *(actions|pull-requests):/gm).length, 2, 'nothing added next to them');
+
+  const writeAll = withoutOptional(template).replace(/^permissions:\n(?: {2}.*\n)+/m, 'permissions: write-all\n');
+  assert.match(writeAll, /^permissions: write-all$/m);
+  assert.doesNotMatch(setAiReview(writeAll, values), /^ *(actions|pull-requests):/m, 'write-all already grants them');
+});
+
+test("setAiReview adds the optional permissions to the gate job's own permissions block when it has one", () => {
+  const jobLevel = [
+    'permissions:',
+    '  contents: read',
+    'jobs:',
+    '  gate:',
+    '    permissions:',
+    '      contents: read',
+    '      id-token: write',
+    '    uses: itm8-public/aifactory-gate/.github/workflows/gate.yml@v0',
+    '    with:',
+    '      zone: green',
+    '',
+  ].join('\n');
+  const lines = setAiReview(jobLevel, values).split('\n');
+  assert.deepEqual(lines.slice(0, 2), ['permissions:', '  contents: read'], 'the workflow block is not the one the gate job gets');
+  assert.deepEqual(lines.slice(4, 9), [
+    '    permissions:',
+    '      contents: read',
+    '      id-token: write',
+    "      actions: read # a push to main reuses the pull request's verdict",
+    '      pull-requests: write # the gate posts its result as one pull request comment',
+  ]);
+  assert.equal(lines[9], '    uses: itm8-public/aifactory-gate/.github/workflows/gate.yml@v0');
+});
+
+test('the template, setup-repo and the README grant the same caller permissions', () => {
+  const grants = (block) => Object.fromEntries([...block.matchAll(/^ {2}([\w-]+):\s*([\w-]+)/gm)].map((m) => [m[1], m[2]]));
+  const inTemplate = grants(template.match(/^permissions:\n((?: {2}.*\n)+)/m)[1]);
+  assert.deepEqual(inTemplate, { contents: 'read', 'id-token': 'write', actions: 'read', 'pull-requests': 'write' });
+  const readme = readFileSync(path.join(root, 'README.md'), 'utf8');
+  const section = readme.slice(readme.indexOf('### Caller permissions'));
+  assert.deepEqual(grants(section.match(/```yaml\npermissions:\n((?: {2}.*\n)+)```/)[1]), inTemplate);
+  for (const [key, value, why] of OPTIONAL_PERMISSIONS) assert.match(template, new RegExp(`^ {2}${key}: ${value} # ${why}$`, 'm'));
+  assert.doesNotMatch(
+    readFileSync(path.join(root, '.github/workflows/gate.yml'), 'utf8'),
+    /^ *(actions|pull-requests): /m,
+    'gate.yml must not ask for them: GitHub refuses a called workflow that asks for more than its caller grants',
+  );
 });
 
 test('setAiReview refuses a caller it cannot change safely', () => {
@@ -283,6 +355,12 @@ test('run --ai-review: nothing to do when the values are already there; a clear 
   run([...aiArgs(), '--apply'], { gh: already.gh, ...log });
   assert.equal(already.writes.length, 0);
   assert.match(log.lines.join('\n'), /already on[\s\S]*Nothing to change/);
+
+  // The review is on, but the caller predates the optional permissions: the pull request adds them.
+  const older = fakeGh(callerReads(withoutOptional(setAiReview(template, values))));
+  run([...aiArgs(), '--apply'], { gh: older.gh, ...capture() });
+  assert.equal(Buffer.from(older.writes[1].body.content, 'base64').toString('utf8'), setAiReview(template, values));
+  assert.match(older.writes[2].body.body, /`actions: read`[\s\S]*`pull-requests: write`[\s\S]*optional/);
 
   const none = fakeGh({ 'repos/o/r': { full_name: 'o/r', default_branch: 'main' } });
   assert.throws(() => run(aiArgs(), { gh: none.gh, ...capture() }), /no \.github\/workflows\/aifactory-gate\.yml on main\. Install the gate first/);
