@@ -162,7 +162,7 @@ The canary and the promote use the maintainer's own GitHub CLI sign-in, as taggi
 
 ### Canary
 
-The canary repository holds synthetic content only. Each case is a branch with one change and an open draft pull request that is never merged. Its caller runs `gate.yml@v0-next` at zone green and level 2.
+The canary repository holds synthetic content only. Each case is a branch with one change and an open draft pull request that is never merged, into `main` unless the table says otherwise. Its caller runs `gate.yml@v0-next` at zone green and level 2.
 
 | Case (branch)              | Change                                      | Expected                                                         |
 | -------------------------- | ------------------------------------------- | ---------------------------------------------------------------- |
@@ -172,15 +172,21 @@ The canary repository holds synthetic content only. Each case is a branch with o
 | `canary/ai-values-missing` | A clean change, AI review on, values empty  | `needs-person`: the AI review values are missing                 |
 | `canary/ai-review`         | A clean change, AI review fully on          | `pass` with "In plain words"; skipped until the canary's review identity values are set as its repository variables |
 | `canary/describes-review`  | A README that explains the gate and the AI review, AI review fully on | `pass`: describing the review is not steering it. Then a merge commit of it is pushed to `canary-push/describes-review`, and that push run must reuse the pull request's verdict |
+| `canary-legacy/case`       | One README line, into `canary-legacy/base`, whose caller grants only `contents: read` and `id-token: write` (the template before 0.5.0, as older customer callers still have) | `pass`: GitHub starts the gate, no comment, and the comment job does not fail. Then a squash of it (the tree the pull request run judged, on its base, one parent) is pushed to `canary-push/legacy`; that push run must run in full and pass |
 
 `scripts/canary.mjs` pushes an empty commit to each branch, because a push by a person starts the workflow and one made with the workflow token would not. If GitHub starts no run for a branch within five minutes, it pushes once more. Then it waits for the runs (up to 30 minutes) and checks each case:
 
-- the run used `gate.yml` at the commit `@v0-next` points at, and that commit pins an image digest;
+- GitHub started the run (a gate job that asks for more permissions than the caller grants stops it), it used `gate.yml` at the commit `@v0-next` points at, and that commit pins an image digest;
 - the `gate / verdict` check passed only for a `pass`;
 - the tests ran and passed in `gate / tests`, not in the verdict job, and the reused push skipped them;
+- the `gate / reuse` and `gate / comment` jobs, which run with what the caller grants, did not fail;
 - `verdict.json` has the expected verdict, exactly the expected reasons, and that commit's engine version;
 - for the AI review cases, the plain-words explanation is there;
-- for a verdict other than `pass`, the pull request has the gate's comment, updated by this run, saying who acts.
+- for a verdict other than `pass`, the pull request has the gate's comment, updated by this run, saying who acts; the legacy case's pull request has none.
+
+The legacy case keeps a release from breaking callers that predate it. If a gate job asks for a permission such a caller does not grant, GitHub does not start the caller's run at all. So a job that needs more than `contents: read` and `id-token: write` has no `permissions` block of its own: it takes what the caller grants, and it must still succeed without it.
+
+Why the legacy case pushes a squash, not a merge: in a private repository such a caller cannot read the pull request run, so every push of it runs in full. The canary repository is public, and the reuse job can read a public repository's runs and artifacts with any token, so a merge commit there reuses the verdict even without `actions: read`. No pull request leads to a squash, so its push runs in full, as a private caller's push does.
 
 The expected verdicts live in `CASES` in `scripts/canary.mjs`. `tests/canary.test.mjs` checks them against the policy, so a change to the policy or to a reason's wording fails the tests until `CASES` is changed with it.
 
