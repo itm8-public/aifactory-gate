@@ -23,7 +23,9 @@
 // --ai-review turns the AI review on in .github/workflows/aifactory-gate.yml with the values from
 //             the customer's page in the AI Factory Management App (consent is recorded there first).
 //             It opens a pull request with the change, and refuses empty or malformed values, so a
-//             caller never gets ai-review: true without them. With --team or --reviewer the same run
+//             caller never gets ai-review: true without them. The same change grants the optional
+//             actions: read and pull-requests: write where the caller does not name them yet (a
+//             caller without them is not refused). With --team or --reviewer the same run
 //             also sets up the ruleset; without them it only opens the pull request (write access
 //             is then enough).
 // --review-token-scope  defaults to https://cognitiveservices.azure.com/.default (an account
@@ -246,25 +248,20 @@ export function plan({ repo, reviewer, existingRulesetId, profile }) {
 }
 
 const GATE_USES = /^\s*uses:\s*['"]?[\w.-]+\/aifactory-gate\/\.github\/workflows\/gate\.yml@/;
+const indent = (l) => l.match(/^ */)[0].length;
+const content = (l) => l.trim() !== '' && !l.trim().startsWith('#');
 
 /**
- * The caller workflow with the AI review turned on: sets ai-review, review-endpoint, azure-client-id,
- * azure-tenant-id and review-token-scope in the gate job's `with:` block, replacing a value that is
- * there and adding one that is not. Everything else in the file, comments included, stays as it was.
- * Throws a plain-language error when the file is not a caller it can safely change.
+ * The permissions gate 0.5.0 can use besides contents: read and id-token: write, as in
+ * templates/aifactory-gate.yml. Both are optional: without them the gate works as before.
  */
-export function setAiReview(text, { endpoint, clientId, tenantId, scope }) {
-  const eol = text.includes('\r\n') ? '\r\n' : '\n';
-  const lines = text.split(/\r?\n/);
-  const indent = (l) => l.match(/^ */)[0].length;
-  const content = (l) => l.trim() !== '' && !l.trim().startsWith('#');
-  const byHand = 'set the AI review values by hand as in templates/aifactory-gate.yml';
+export const OPTIONAL_PERMISSIONS = [
+  ['actions', 'read', "a push to main reuses the pull request's verdict"],
+  ['pull-requests', 'write', 'the gate posts its result as one pull request comment'],
+];
 
-  if (!lines.some((l) => /^\s*id-token:\s*write\b/.test(l) || /^\s*permissions:\s*write-all\b/.test(l))) {
-    throw new Error(
-      `${CALLER_PATH} does not grant "id-token: write", which the gate needs to sign in to the review Foundry. Add it under permissions: as in templates/aifactory-gate.yml, then run this again`,
-    );
-  }
+/** Where the gate job is: the uses: line, its indentation, and the job's lines [start, end). */
+function gateJob(lines, byHand) {
   const uses = lines.flatMap((l, i) => (GATE_USES.test(l) ? [i] : []));
   if (!uses.length) throw new Error(`${CALLER_PATH} does not call the aifactory gate (no "uses: itm8-public/aifactory-gate/.github/workflows/gate.yml@…" line)`);
   if (uses.length > 1) throw new Error(`${CALLER_PATH} calls the aifactory gate more than once; ${byHand}`);
@@ -275,6 +272,48 @@ export function setAiReview(text, { endpoint, clientId, tenantId, scope }) {
   while (start > 0 && !(content(lines[start - 1]) && indent(lines[start - 1]) < jobIndent)) start--;
   let end = u + 1;
   while (end < lines.length && !(content(lines[end]) && indent(lines[end]) < jobIndent)) end++;
+  return { u, jobIndent, start, end };
+}
+
+/**
+ * Adds the optional permissions the caller does not name yet to the permissions block that the gate
+ * job gets: the job's own, or else the workflow's. A permission it already names keeps its value, and
+ * a block it cannot extend safely (write-all, read-all, {} or no block) stays as it is.
+ */
+function addOptionalPermissions(lines, { start, end, jobIndent }) {
+  let at = -1;
+  for (let i = start; i < end && at < 0; i++) if (indent(lines[i]) === jobIndent && /^\s*permissions\s*:/.test(lines[i])) at = i;
+  if (at < 0) at = lines.findIndex((l) => /^permissions\s*:/.test(l));
+  if (at < 0 || !/^\s*permissions\s*:\s*(#.*)?$/.test(lines[at])) return lines;
+  const children = [];
+  for (let i = at + 1; i < lines.length && !(content(lines[i]) && indent(lines[i]) <= indent(lines[at])); i++) if (content(lines[i])) children.push(i);
+  if (!children.length) return lines;
+  const pad = ' '.repeat(indent(lines[children[0]]));
+  const added = OPTIONAL_PERMISSIONS.filter(([key]) => !children.some((i) => new RegExp(`^${pad}${key}\\s*:`).test(lines[i]))).map(([key, value, why]) => `${pad}${key}: ${value} # ${why}`);
+  const out = lines.slice();
+  out.splice(children[children.length - 1] + 1, 0, ...added);
+  return out;
+}
+
+/**
+ * The caller workflow with the AI review turned on: sets ai-review, review-endpoint, azure-client-id,
+ * azure-tenant-id and review-token-scope in the gate job's `with:` block, replacing a value that is
+ * there and adding one that is not. It also grants the OPTIONAL_PERMISSIONS the caller does not name
+ * yet. Everything else in the file, comments included, stays as it was. Throws a plain-language error
+ * when the file is not a caller it can safely change; a caller without the optional permissions is not
+ * refused.
+ */
+export function setAiReview(text, { endpoint, clientId, tenantId, scope }) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+  const byHand = 'set the AI review values by hand as in templates/aifactory-gate.yml';
+
+  if (!lines.some((l) => /^\s*id-token:\s*write\b/.test(l) || /^\s*permissions:\s*write-all\b/.test(l))) {
+    throw new Error(
+      `${CALLER_PATH} does not grant "id-token: write", which the gate needs to sign in to the review Foundry. Add it under permissions: as in templates/aifactory-gate.yml, then run this again`,
+    );
+  }
+  const { jobIndent, start, end } = gateJob(lines, byHand);
   let withAt = -1;
   for (let i = start; i < end; i++) if (indent(lines[i]) === jobIndent && /^\s*with:\s*(#.*)?$/.test(lines[i])) withAt = i;
   if (withAt < 0) throw new Error(`the gate job in ${CALLER_PATH} has no "with:" block; ${byHand}`);
@@ -312,7 +351,7 @@ export function setAiReview(text, { endpoint, clientId, tenantId, scope }) {
     const after = lastAi >= 0 ? lastAi : block[block.length - 1];
     out.splice(after + 1, 0, ...absent);
   }
-  return out.join(eol);
+  return addOptionalPermissions(out, gateJob(out, byHand)).join(eol);
 }
 
 /** The writes that turn the AI review on: a branch from the default branch, the file, a pull request. */
@@ -344,6 +383,8 @@ export function aiReviewCalls({ repo, defaultBranch, baseSha, branchExists, file
           "Turns on the AI review in the aifactory gate, with the values from the customer's page in the AI Factory Management App, where the customer's consent is recorded.",
           '',
           'The review identity lives in itm8\'s tenant: nothing changes in your Azure. Written by `setup-repo.mjs --ai-review`.',
+          '',
+          "Where the caller did not name them yet, it also grants `actions: read` (a push to main reuses the pull request's verdict) and `pull-requests: write` (the gate posts its result as one pull request comment). Both are optional: the gate works without them.",
         ].join('\n'),
       },
       why: 'Open the pull request',
