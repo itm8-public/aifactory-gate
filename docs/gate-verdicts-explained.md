@@ -189,7 +189,7 @@ Yes, for the `@v0` line, with one condition you control.
 The required-check name is the caller's job name, a slash, and the reusable workflow's job name:
 
 - the reusable workflow's job is named `verdict` ([`.github/workflows/gate.yml:52-53`](../.github/workflows/gate.yml)) — itm8 keeps this fixed as part of the `@v0` contract;
-- your caller workflow names its job `gate` ([`templates/aifactory-gate.yml:16`](../templates/aifactory-gate.yml)), which is why the template says **"Do not rename the job `gate`."**
+- your caller workflow names its job `gate` ([`templates/aifactory-gate.yml:18`](../templates/aifactory-gate.yml)), which is why the template says **"Do not rename the job `gate`."**
 
 Together that gives `gate / verdict`, and your ruleset depends on exactly that string
 ([`scripts/setup-repo.mjs:16`](../scripts/setup-repo.mjs)). **As long as you do not rename your
