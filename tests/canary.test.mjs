@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { decide } from '../engine/src/policy.mjs';
-import { CANARY_REPO, CASES, CHANNEL, CHECK_NAME, judge, judgeComment, judgeReuse, latestRun, parseArgs, run } from '../scripts/canary.mjs';
+import { CANARY_REPO, CASES, CHANNEL, CHECK_NAME, TESTS_NAME, judge, judgeComment, judgeReuse, latestRun, parseArgs, run } from '../scripts/canary.mjs';
 import { CANARY_CONTEXT, GATE_REPO } from '../scripts/release.mjs';
 
 const policy = JSON.parse(readFileSync(new URL('../policy/policy.v1.json', import.meta.url), 'utf8'));
@@ -14,7 +14,10 @@ const goodRun = (id = 1) => ({
   html_url: `https://github.com/${CANARY_REPO}/actions/runs/${id}`,
   referenced_workflows: [{ path: `${GATE_REPO}/.github/workflows/gate.yml@${CHANNEL}`, ref: `refs/tags/${CHANNEL}`, sha: GATE_SHA }],
 });
-const job = (conclusion) => ({ name: CHECK_NAME, conclusion });
+const job = (conclusion, steps = [{ name: 'Test outcome' }, { name: 'Scan and decide' }, { name: 'Enforce' }]) => ({ name: CHECK_NAME, conclusion, steps });
+const testsJob = (conclusion = 'success') => ({ name: TESTS_NAME, conclusion });
+// The verdict job ended `conclusion`; the tests job ran on its own and ended `tests`.
+const jobs = (conclusion, tests = 'success') => ({ job: job(conclusion), tests: testsJob(tests) });
 
 // The facts each canary branch produces in the gate, run through the real policy. If a policy or
 // reason text changes, this fails until CASES in scripts/canary.mjs is changed with it.
@@ -41,7 +44,7 @@ test('every case expects what the policy decides for its change', () => {
   for (const c of CASES) {
     const record = recordFor(c.branch, c.explanation ? { explanation: 'Plain words.' } : {});
     assert.equal(record.verdict, c.verdict, c.branch);
-    assert.deepEqual(judge(c, { run: goodRun(), job: job(c.verdict === 'pass' ? 'success' : 'failure'), record }, gate), [], c.branch);
+    assert.deepEqual(judge(c, { run: goodRun(), ...jobs(c.verdict === 'pass' ? 'success' : 'failure'), record }, gate), [], c.branch);
   }
 });
 
@@ -54,30 +57,47 @@ test('judge names each way a run can be wrong', () => {
   const c = kase('canary/platform');
   const record = recordFor('canary/platform');
   const wrongRef = { ...goodRun(), referenced_workflows: [{ path: `${GATE_REPO}/.github/workflows/gate.yml@v0`, ref: 'refs/tags/v0', sha: 'a'.repeat(40) }] };
-  assert.deepEqual(judge(c, { run: wrongRef, job: job('failure'), record }, gate), [
+  assert.deepEqual(judge(c, { run: wrongRef, ...jobs('failure'), record }, gate), [
     'the run called gate.yml at refs/tags/v0, not @v0-next',
     'the run used gate commit aaaaaaa, not fffffff',
   ]);
-  assert.match(judge(c, { run: { ...goodRun(), referenced_workflows: [] }, job: job('failure'), record }, gate)[0], /did not call/);
-  assert.deepEqual(judge(c, { run: goodRun(), job: job('success'), record }, gate), ['"gate / verdict" ended success, expected failure']);
-  assert.deepEqual(judge(c, { run: goodRun(), job: undefined, record }, gate), ['no "gate / verdict" check']);
-  assert.deepEqual(judge(c, { run: goodRun(), job: job('failure'), record: undefined }, gate), ['no verdict.json']);
+  assert.match(judge(c, { run: { ...goodRun(), referenced_workflows: [] }, ...jobs('failure'), record }, gate)[0], /did not call/);
+  assert.deepEqual(judge(c, { run: goodRun(), ...jobs('success'), record }, gate), ['"gate / verdict" ended success, expected failure']);
+  assert.deepEqual(judge(c, { run: goodRun(), job: undefined, tests: testsJob(), record }, gate), ['no "gate / verdict" check']);
+  assert.deepEqual(judge(c, { run: goodRun(), ...jobs('failure'), record: undefined }, gate), ['no verdict.json']);
   // A scanner that stops running adds a reason: a mismatch even though the verdict is the same.
   const extra = { ...record, reasons: [...record.reasons, { action: 'needs-person', text: 'osv-scanner did not produce a result (exit 1)' }] };
-  assert.deepEqual(judge(c, { run: goodRun(), job: job('failure'), record: extra }, gate), ['unexpected reason: osv-scanner did not produce a result (exit 1)']);
-  assert.deepEqual(judge(c, { run: goodRun(), job: job('failure'), record: { ...record, reasons: [] } }, gate), [
+  assert.deepEqual(judge(c, { run: goodRun(), ...jobs('failure'), record: extra }, gate), ['unexpected reason: osv-scanner did not produce a result (exit 1)']);
+  assert.deepEqual(judge(c, { run: goodRun(), ...jobs('failure'), record: { ...record, reasons: [] } }, gate), [
     `missing reason ${c.reasons[0]}`,
   ]);
-  assert.deepEqual(judge(c, { run: goodRun(), job: job('failure'), record: { ...record, versions: { engine: '0.3.0' } } }, gate), ['engine 0.3.0, expected 0.4.0']);
+  assert.deepEqual(judge(c, { run: goodRun(), ...jobs('failure'), record: { ...record, versions: { engine: '0.3.0' } } }, gate), ['engine 0.3.0, expected 0.4.0']);
   const p = kase('canary/pass');
-  assert.deepEqual(judge(p, { run: goodRun(), job: job('success'), record: { ...recordFor('canary/pass'), verdict: 'fail' } }, gate), ['verdict fail, expected pass']);
+  assert.deepEqual(judge(p, { run: goodRun(), ...jobs('success'), record: { ...recordFor('canary/pass'), verdict: 'fail' } }, gate), ['verdict fail, expected pass']);
+});
+
+test('judge: the tests run in "gate / tests", never in the verdict job', () => {
+  const p = kase('canary/pass');
+  const record = recordFor('canary/pass');
+  // A gate that runs the tests in the verdict job again (0.5.0 and before).
+  const together = job('success', [{ name: 'Tests' }, { name: 'Scan and decide' }, { name: 'Enforce' }]);
+  assert.deepEqual(judge(p, { run: goodRun(), job: together, record }, gate), [
+    '"gate / verdict" ran the tests itself, not in "gate / tests"',
+    'no "gate / tests" job',
+  ]);
+  assert.deepEqual(judge(p, { run: goodRun(), ...jobs('success', 'failure'), record }, gate), ['"gate / tests" ended failure, expected success']);
+  assert.deepEqual(judge(p, { run: goodRun(), ...jobs('success', 'skipped'), record }, gate), ['"gate / tests" ended skipped, expected success']);
+  // The reused push runs no tests.
+  const d = kase('canary/describes-review');
+  const reused = recordFor('canary/describes-review', { explanation: 'x', reused: { runId: 7 } });
+  assert.deepEqual(judgeReuse(d, { run: goodRun(8), ...jobs('success', 'success'), record: reused }, gate, 7), ['"gate / tests" ended success, expected skipped']);
 });
 
 test('the full AI review case needs a completed review and the plain words', () => {
   const c = kase('canary/ai-review');
   const record = recordFor('canary/ai-review');
-  assert.deepEqual(judge(c, { run: goodRun(), job: job('success'), record }, gate), ['no "In plain words" explanation']);
-  assert.deepEqual(judge(c, { run: goodRun(), job: job('success'), record: { ...record, explanation: 'x', aiReview: { error: 'sign-in failed' } } }, gate), [
+  assert.deepEqual(judge(c, { run: goodRun(), ...jobs('success'), record }, gate), ['no "In plain words" explanation']);
+  assert.deepEqual(judge(c, { run: goodRun(), ...jobs('success'), record: { ...record, explanation: 'x', aiReview: { error: 'sign-in failed' } } }, gate), [
     'the AI review did not complete: sign-in failed',
   ]);
 });
@@ -155,10 +175,11 @@ function fakeGitHub({ verdicts = {}, variable = false, movesTag = false, pinned 
       const id = runFor(m[1]);
       return JSON.stringify({ workflow_runs: id ? [{ id, event: 'pull_request', status: 'completed', run_number: id, run_attempt: 1 }] : [] });
     }
-    if ((m = p.match(/actions\/runs\/(\d+)\/jobs$/))) {
+    if ((m = p.match(/actions\/runs\/(\d+)\/jobs(\?|$)/))) {
       const c = byRun.get(Number(m[1]) % PUSH);
       const v = verdictOf(c);
-      return JSON.stringify({ jobs: [job(v === 'pass' ? 'success' : 'failure')] });
+      const reused = Number(m[1]) > PUSH && !ranAgain;
+      return JSON.stringify({ jobs: [job(v === 'pass' ? 'success' : 'failure'), testsJob(reused ? 'skipped' : 'success')] });
     }
     if ((m = p.match(/actions\/runs\/(\d+)$/))) return JSON.stringify(goodRun(Number(m[1])));
     throw new Error(`unexpected call: ${args.join(' ')}`);
@@ -227,8 +248,8 @@ test('judgeComment and judgeReuse', () => {
   assert.deepEqual(judgeComment(kase('canary/pass'), []), [], 'a pass needs no comment');
   const d = kase('canary/describes-review');
   const record = recordFor('canary/describes-review', { explanation: 'x', reused: { runId: 7 } });
-  assert.deepEqual(judgeReuse(d, { run: goodRun(8), job: job('success'), record }, gate, 7), []);
-  assert.deepEqual(judgeReuse(d, { run: goodRun(8), job: job('success'), record: { ...record, reused: { runId: 6 } } }, gate, 7), ['it reused run 6, not 7']);
+  assert.deepEqual(judgeReuse(d, { run: goodRun(8), ...jobs('success', 'skipped'), record }, gate, 7), []);
+  assert.deepEqual(judgeReuse(d, { run: goodRun(8), ...jobs('success', 'skipped'), record: { ...record, reused: { runId: 6 } } }, gate, 7), ['it reused run 6, not 7']);
 });
 
 test('a mismatch exits 1 and records failure', () => {

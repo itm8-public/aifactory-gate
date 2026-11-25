@@ -7,7 +7,7 @@ Status: 0.1.0. Facts (tests, secrets, code security, dependencies) are live-test
 ## How it works
 
 1. The customer repository holds a short caller workflow (`templates/aifactory-gate.yml`) that calls `.github/workflows/gate.yml` at a release tag.
-2. The gate runs the project's test command, then the engine image:
+2. The gate runs the project's test command in a job of its own (`gate / tests`), then the engine image in the `gate / verdict` job, on a runner that never ran repository code (see [Where repository code runs](#where-repository-code-runs)):
    - **gitleaks**: secrets (redacted; values never leave the scanner),
    - **Opengrep** with the itm8 rule pack in `rules/opengrep`: code security,
    - **OSV-Scanner**: known vulnerabilities in dependencies (sends package names and versions, not code, to osv.dev).
@@ -18,7 +18,7 @@ Status: 0.1.0. Facts (tests, secrets, code security, dependencies) are live-test
 
 ### Caller permissions
 
-The verdict job only ever has `contents: read` and `id-token: write`. Two more permissions in the caller turn on two conveniences; each runs in a job of its own that runs no repository code:
+The tests job only ever has `contents: read`. The verdict job only ever has `contents: read` and `id-token: write`. Two more permissions in the caller turn on two conveniences; each runs in a job of its own that runs no repository code:
 
 ```yaml
 permissions:
@@ -29,6 +29,21 @@ permissions:
 ```
 
 Without them the gate works as before: the push to `main` runs in full, and the result is in the job summary only. `gate.yml` cannot ask for them itself: GitHub refuses to start a called workflow that asks for more than its caller grants.
+
+### Where repository code runs
+
+The project's test command is the only repository code the gate runs, and it runs in the `tests` job (since 0.6.0). That job has `contents: read` and no OIDC token. It passes the verdict job one value, the tests' outcome. The verdict job checks out the commit again on a fresh runner and runs only the pinned engine image there. Until 0.5.0 the tests ran in the verdict job itself, so a test could do any of these:
+
+- change or delete files before the scanners read the working tree, with no special rights;
+- request the job's OIDC token and sign in as the customer's review identity;
+- on GitHub-hosted runners, which give every step passwordless sudo, replace `docker`, rewrite `verdict.json`, or read a token from the runner's memory.
+
+None of that reaches the verdict job now.
+
+- **What the verdict job accepts.** It turns the tests job's result into one of five words: `not-configured`, `success`, `failure`, `cancelled` or `skipped`. `success` counts only from a tests job that passed. Anything else means the tests did not run, which needs a person. The value is never printed, and the verdict job reads no cache or artifact that another job of the run wrote.
+- **What a test can still do.** It can report its own result: a test that exits 0 passes, as it always could. Tests are a quality check, not a security boundary. The secrets, code security and dependency findings, and the AI review, come from the verdict job.
+- **A skipped check.** GitHub counts a required check whose job was skipped as passed. So the verdict job runs with `always()`, and its last step, Enforce, does too. At levels 2 and 3, a run cancelled while the tests run cannot leave `gate / verdict` passed: the tests count as not run, or no verdict is made, or the job is cancelled.
+- **What it costs.** One more runner start and checkout per run, usually seconds to tens of seconds of wall time; Node is set up only in the tests job, as before. On private repositories, one more billed job-minute (GitHub rounds each job up to a minute). A push that reuses the pull request's verdict runs no tests. On such a push the reuse job checks the candidate against the commit before the tests job decides to skip. The verdict job checks it again. If the two checks disagree, the verdict says the tests did not run; it never passes without them.
 
 ## AI review (off by default)
 
@@ -162,6 +177,7 @@ The canary repository holds synthetic content only. Each case is a branch with o
 
 - the run used `gate.yml` at the commit `@v0-next` points at, and that commit pins an image digest;
 - the `gate / verdict` check passed only for a `pass`;
+- the tests ran and passed in `gate / tests`, not in the verdict job, and the reused push skipped them;
 - `verdict.json` has the expected verdict, exactly the expected reasons, and that commit's engine version;
 - for the AI review cases, the plain-words explanation is there;
 - for a verdict other than `pass`, the pull request has the gate's comment, updated by this run, saying who acts.
