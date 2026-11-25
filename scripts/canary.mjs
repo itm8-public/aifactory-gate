@@ -17,10 +17,11 @@
 //     that commit (and, for the AI review cases, the plain-words explanation);
 //   - for a verdict other than pass, the pull request has the gate's comment, saying who acts; a
 //     case with `noComment` must have none.
-// A case with `reuseOn` or `fullRunOn` then gets the push to main simulated: a merge commit of its
-// pull request, with the tree the pull request run judged, pushed to that branch. With `reuseOn` the
-// push run must reuse the pull request's verdict, not run again, and its tests job must be skipped;
-// with `fullRunOn` (a caller without actions: read) it must run in full and give the same verdict.
+// A case with `reuseOn` or `fullRunOn` then gets the push to main simulated on that branch: a commit
+// with the tree the pull request run judged, on the base it judged it against. With `reuseOn` it is a
+// merge commit of the pull request, and its push run must reuse the pull request's verdict, not run
+// again, and its tests job must be skipped. With `fullRunOn` it is a squash (one parent), which no
+// pull request leads to, and its push run must run in full and give the same verdict.
 // The result is recorded as the commit status aifactory/canary on that gate commit (--no-record
 // skips this); `release.mjs promote` requires it to be success. Exit 1 on any mismatch.
 // Needs the GitHub CLI signed in with write access to both repositories.
@@ -84,8 +85,11 @@ export const CASES = [
     // id-token: write), as callers that predate it still do. GitHub refuses to start a called
     // workflow whose job asks for more than the caller grants, so a gate job that needs a new
     // permission would stop every such caller. Its base branch holds that caller, so the pull
-    // request's change is one README line. Without pull-requests: write there is no comment; without
-    // actions: read the push of its merge cannot reuse the verdict and runs in full.
+    // request's change is one README line. Without pull-requests: write there is no comment.
+    // Its push to main is simulated as a squash, which must run in full: in a private repository
+    // such a caller cannot read the pull request run, so every push of it runs in full. (A merge
+    // commit would not show that here: this repository is public, so the reuse job reads its runs
+    // with any token, and the push reused the verdict on 2026-11-25.)
     branch: 'canary-legacy/case',
     base: 'canary-legacy/base',
     what: 'a caller with the permissions before 0.5.0; then its merge is pushed',
@@ -170,10 +174,10 @@ export function judgeReuse(kase, { run, job, tests, record }, gate, prRunId) {
   return problems;
 }
 
-/** What is wrong with the push run whose caller cannot read the pull request run: it must run in full, tests included. */
+/** What is wrong with the push run of a squash, which no pull request leads to: it must run in full, tests included. */
 export function judgeFullRun(kase, { run, job, tests, record }, gate) {
   const problems = judge(kase, { run, job, tests, record }, gate);
-  if (record?.reused) problems.push(`it reused run ${record.reused.runId}; a caller without actions: read must run in full`);
+  if (record?.reused) problems.push(`it reused run ${record.reused.runId}; a squash that no pull request leads to must run in full`);
   return problems;
 }
 
@@ -308,17 +312,18 @@ export function run(
     sleep(pollMs);
   }
 
-  // The push to main, simulated on a branch of its own: a merge commit of the pull request with the
-  // tree its run judged, on the base it judged it against. Its run must take that verdict
-  // (`reuseOn`), or, for a caller that cannot read the pull request run, run in full (`fullRunOn`).
+  // The push to main, simulated on a branch of its own: a commit with the tree the pull request run
+  // judged, on the base it judged it against. A merge commit of the pull request must take that
+  // verdict (`reuseOn`). A squash, which no pull request leads to, must run in full (`fullRunOn`).
   const pushAndJudgeMerge = (c) => {
     const target = c.kase.reuseOn ?? c.kase.fullRunOn;
     const { subject } = c.record ?? {};
     if (!subject?.tree || !subject.base) return [`${target}: the pull request verdict has no subject to push`];
     const ref = `repos/${CANARY_REPO}/git/refs/heads/${enc(target)}`;
+    const parents = c.kase.reuseOn ? [subject.base, c.sha] : [subject.base];
     const pushMerge = (attempt) => {
-      const message = `canary: merge of ${c.kase.branch} (pull request run ${c.run.id}), attempt ${attempt}`;
-      const merge = send('POST', `repos/${CANARY_REPO}/git/commits`, { message, tree: subject.tree, parents: [subject.base, c.sha] }).sha;
+      const message = `canary: ${c.kase.reuseOn ? 'merge' : 'squash'} of ${c.kase.branch} (pull request run ${c.run.id}), attempt ${attempt}`;
+      const merge = send('POST', `repos/${CANARY_REPO}/git/commits`, { message, tree: subject.tree, parents }).sha;
       try {
         send('PATCH', ref, { sha: merge, force: true });
       } catch (e) {
@@ -367,7 +372,7 @@ export function run(
     if (problems.length) bad++;
     rows.push(
       `${problems.length ? 'MISMATCH' : 'ok      '} ${c.kase.branch.padEnd(26)} expect ${c.kase.verdict.padEnd(12)} got ${(c.got ?? 'none').padEnd(12)} ${c.run?.html_url ?? c.pr}` +
-        (c.pushRun ? `\n         push of the merge (${c.kase.reuseOn ?? c.kase.fullRunOn}): ${c.pushRun.html_url}` : '') +
+        (c.pushRun ? `\n         push of the ${c.kase.reuseOn ? 'merge' : 'squash'} (${c.kase.reuseOn ?? c.kase.fullRunOn}): ${c.pushRun.html_url}` : '') +
         problems.map((p) => `\n         - ${p}`).join(''),
     );
   }

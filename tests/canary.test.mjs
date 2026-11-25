@@ -263,19 +263,21 @@ test('a push of the merge that runs again instead of reusing is a mismatch', () 
   assert.match(lines.join('\n'), /canary-push\/describes-review: it ran again instead of reusing the pull request verdict/);
 });
 
-test('the legacy caller case: its pull request goes into its own base, and the push of its merge runs in full', () => {
+test('the legacy caller case: its pull request goes into its own base, and the push of its squash runs in full', () => {
   const fake = fakeGitHub();
   const lines = [];
   assert.equal(run([], { ...fake, sleep: () => {}, out: (l) => lines.push(l) }), 0);
   const writes = fake.writes();
-  const merge = writes.find((w) => w.args[3].endsWith('/git/commits') && w.body.tree === 'T-canary-legacy/case');
-  assert.deepEqual(merge.body.parents, ['BASE-canary-legacy/case', 'head-canary-legacy/case+'], 'a merge of the judged base and the pull request head');
+  const squash = writes.find((w) => w.args[3].endsWith('/git/commits') && w.body.tree === 'T-canary-legacy/case');
+  // One parent: no pull request leads to it, so not even a public repository's readable runs let it reuse.
+  assert.deepEqual(squash.body.parents, ['BASE-canary-legacy/case'], 'the judged tree on the judged base, one parent');
+  assert.match(squash.body.message, /^canary: squash of canary-legacy\/case/);
   const pushed = writes.find((w) => w.args[3] === `repos/${CANARY_REPO}/git/refs/heads/canary-push/legacy`);
   assert.equal(pushed.body.sha, 'BASE-canary-legacy/case+');
   // Its pull request's comments are read although the verdict is pass: there must be none.
   const legacyPr = CASES.findIndex((c) => c.branch === 'canary-legacy/case') + 1;
   assert.ok(fake.calls.some((c) => c.args[1] === `repos/${CANARY_REPO}/issues/${legacyPr}/comments?per_page=100`));
-  assert.match(lines.join('\n'), /ok +canary-legacy\/case +expect pass +got pass[^\n]*\n +push of the merge \(canary-push\/legacy\): /);
+  assert.match(lines.join('\n'), /ok +canary-legacy\/case +expect pass +got pass[^\n]*\n +push of the squash \(canary-push\/legacy\): /);
 });
 
 test('the legacy caller case is a mismatch when its push reuses, it has a comment or the comment job fails', () => {
@@ -284,7 +286,7 @@ test('the legacy caller case is a mismatch when its push reuses, it has a commen
     assert.equal(run([], { ...fakeGitHub(opts), sleep: () => {}, out: (l) => lines.push(l) }), 1);
     return lines.join('\n');
   };
-  assert.match(out({ legacyReused: true }), /MISMATCH canary-legacy\/case[\s\S]*canary-push\/legacy: it reused run \d+; a caller without actions: read must run in full/);
+  assert.match(out({ legacyReused: true }), /MISMATCH canary-legacy\/case[\s\S]*canary-push\/legacy: it reused run \d+; a squash that no pull request leads to must run in full/);
   assert.match(out({ legacyComment: true }), /MISMATCH canary-legacy\/case[\s\S]*1 gate comment\(s\) on the pull request, expected none/);
   // Every case's comment job is judged, not only the legacy one's.
   const failed = out({ commentJob: 'failure' });
@@ -319,7 +321,7 @@ test('judge, judgeJobs, judgeFullRun and judgeComment for a caller that grants l
   // A full run runs the tests: a skipped tests job means it did not run in full.
   assert.deepEqual(judgeFullRun(l, { run: goodRun(9), ...jobs('success', 'skipped'), record: { ...record, reused: { runId: 8 } } }, gate), [
     '"gate / tests" ended skipped, expected success',
-    'it reused run 8; a caller without actions: read must run in full',
+    'it reused run 8; a squash that no pull request leads to must run in full',
   ]);
   assert.deepEqual(judgeComment(l, []), []);
   assert.deepEqual(judgeComment(l, [{ user: { login: 'github-actions[bot]' }, body: '<!-- aifactory-gate -->\n## aifactory gate: pass' }]), [
