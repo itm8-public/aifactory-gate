@@ -98,6 +98,8 @@ Level 1 runs the same checks but never blocks. Levels 2 and 3 block on anything 
 
 Rulesets on private repositories need GitHub Team (organizations) or Pro (personal accounts).
 
+This ruleset (the required `gate / verdict` check and a code-owner review) is the recommended setup for customer repositories; it does not describe how the AI Factory's own repositories are run.
+
 ### Any AI tool, the same rules
 
 Customers use Claude, GitHub Copilot, Lovable, Cursor and others, and are never tied to one. The repository carries tool-neutral instructions (`AGENTS.md`) and thin adapters, and the gate runs on GitHub, so the checks are the same whichever tool wrote the change. Add or refresh just these files with `node scripts/setup-repo.mjs --repo OWNER/NAME --tools claude,copilot` (dry run until `--apply`). Details, the Lovable flow (`lovable-sync` through a pull request and the gate) and the files' texts: [`docs/ai-tools.md`](docs/ai-tools.md), [`templates/ai-tools/`](templates/ai-tools).
